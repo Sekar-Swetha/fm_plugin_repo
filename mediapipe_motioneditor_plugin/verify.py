@@ -1,28 +1,17 @@
-"""
-Verification harness — produces visual + statistical proofs that the
-MediaPipe-based skeleton extractor is a correct drop-in for OpenPose in the
-MotionEditor pipeline.
+"""Verification harness for the MediaPipe pose extractor.
 
 Outputs (under `proofs/`):
-    1. side_by_side/<frame>.png      — original frame | OpenPose | MediaPipe (ours)
-    2. overlay/<frame>.png           — original + ours-skeleton blended
-    3. diff/<frame>.png              — pixel-level diff vs. controlnet_aux openpose
-                                       (if controlnet_aux is installed)
-    4. report.json                   — detection rate, mean conf, missing-kp counts
-    5. report.md                     — human-readable summary for the supervisor
+    side_by_side/<frame>.png   - original | OpenPose ref | ours
+    overlay/<frame>.png        - original + ours-skeleton blended
+    diff/<frame>.png           - pixel diff vs OpenPose ref (if provided)
+    report.json / report.md    - stats + summary
 
 Usage:
-    python verify.py --frames /path/to/data/case-1/images \
-                     --openpose-ref /path/to/data/case-1/source_condition/openposefull \
+    python verify.py --frames /path/to/data/case-1/images \\
+                     --openpose-ref /path/to/data/case-1/source_condition/openposefull \\
                      --out proofs/
 
-The `--openpose-ref` argument is optional. If omitted, the script only emits
-overlays and statistics (no pixel diff). If present, it computes a per-frame
-pixel-diff between our output and the reference OpenPose output and reports
-mean L1 error.
-
-This script can run without a GPU and produces deterministic artefacts that
-the supervisor can inspect without re-running the pipeline.
+`--openpose-ref` is optional; without it the script only emits overlays + stats.
 """
 
 from __future__ import annotations
@@ -37,11 +26,7 @@ import cv2
 import numpy as np
 from tqdm import tqdm
 
-from mp_openpose_extractor import (
-    MediaPipeOpenPoseExtractor,
-    OpenPoseFrame,
-    render_openpose_skeleton,
-)
+from mp_openpose_extractor import MediaPipeOpenPoseExtractor
 
 
 def _list_frames(folder: str):
@@ -52,7 +37,6 @@ def _list_frames(folder: str):
 
 
 def _hstack_same_height(*imgs):
-    """Concatenate BGR images horizontally, resizing to common height."""
     h = min(im.shape[0] for im in imgs)
     rescaled = []
     for im in imgs:
@@ -77,10 +61,9 @@ def main():
     parser.add_argument("--frames", type=str, required=True,
                         help="Folder of input frames (jpg/png).")
     parser.add_argument("--openpose-ref", type=str, default=None,
-                        help="Optional: folder of reference OpenPose PNGs to "
-                             "diff against (filenames must match).")
+                        help="Optional reference OpenPose PNG folder.")
     parser.add_argument("--out", type=str, default="proofs",
-                        help="Output folder for proofs (default 'proofs').")
+                        help="Output folder.")
     parser.add_argument("--max-frames", type=int, default=8,
                         help="How many frames to emit side-by-side images for.")
     parser.add_argument("--min-conf", type=float, default=0.3)
@@ -106,7 +89,6 @@ def main():
     }
 
     l1_errors = []
-
     side_by_side_emitted = 0
 
     with MediaPipeOpenPoseExtractor(min_conf=args.min_conf) as extractor:
@@ -131,13 +113,11 @@ def main():
             })
             stats["mean_visibility"] += mean_vis
 
-            # Always emit overlay
             cv2.imwrite(
                 str(out_root / "overlay" / f"{stem}.png"),
                 _overlay(bgr, skel),
             )
 
-            # Build side-by-side for first N frames
             if side_by_side_emitted < args.max_frames:
                 tiles = [bgr]
                 if args.openpose_ref:
@@ -152,7 +132,6 @@ def main():
                 )
                 side_by_side_emitted += 1
 
-            # Pixel-diff vs OpenPose reference
             if args.openpose_ref:
                 ref_path = os.path.join(args.openpose_ref, f"{stem}.png")
                 if os.path.isfile(ref_path):
@@ -162,7 +141,6 @@ def main():
                     diff = cv2.absdiff(ref, cv2.resize(skel, (ref.shape[1], ref.shape[0])))
                     cv2.imwrite(str(out_root / "diff" / f"{stem}.png"), diff)
 
-    # Normalise stats
     n = stats["num_frames"]
     stats["mean_visibility"] /= max(n, 1)
     stats["per_keypoint_detection_rate"] = [
@@ -176,11 +154,9 @@ def main():
             "frames_compared": len(l1_errors),
         }
 
-    # Write JSON
     with open(out_root / "report.json", "w") as f:
         json.dump(stats, f, indent=2)
 
-    # Write Markdown report
     lines = [
         "# MediaPipe pose extraction — verification report",
         "",
@@ -189,7 +165,7 @@ def main():
         f"({100 * stats['frames_with_pose'] / max(n, 1):.1f}%)",
         f"- Mean landmark visibility (over detected): **{stats['mean_visibility']:.3f}**",
         "",
-        "## Per-keypoint detection rate (fraction of frames detecting each OP-18 keypoint)",
+        "## Per-keypoint detection rate",
         "",
         "| idx | name | detection rate |",
         "|----:|:-----|---------------:|",
@@ -209,28 +185,7 @@ def main():
             f"- Frames compared: **{cmp['frames_compared']}**",
             f"- Mean per-pixel L1 (RGB, 0..255): **{cmp['mean']:.2f}**",
             f"- Max: {cmp['max']:.2f}, Min: {cmp['min']:.2f}",
-            "",
-            "_Interpretation:_ Lower is better. ControlNet does not require",
-            "byte-equality with OpenPose; it requires the same skeleton",
-            "topology, the same canvas size, and roughly the same colour",
-            "palette. An L1 in the low tens (out of 255) typically corresponds",
-            "to minor sub-pixel offset of joints and matching limb colours.",
-            "Per-frame diff PNGs are in `diff/`.",
         ]
-
-    lines += [
-        "",
-        "## How to read the artefacts",
-        "",
-        "- `side_by_side/` — original frame | (ref OpenPose, if provided) | "
-        "MediaPipe (ours). Use this to eyeball that joints land in the right "
-        "places and limb colours match.",
-        "- `overlay/` — input frame blended with our skeleton. Use this to "
-        "spot mis-localised joints.",
-        "- `diff/` — pixel-absolute-difference against the OpenPose reference. "
-        "Used to quantify drift on a per-frame basis.",
-        "- `report.json` — machine-readable version of every number above.",
-    ]
 
     (out_root / "report.md").write_text("\n".join(lines))
     print(f"Wrote proofs to: {out_root}")

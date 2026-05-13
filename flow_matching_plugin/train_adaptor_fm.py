@@ -1,24 +1,12 @@
-"""
-MotionEditor training script, modified to use Conditional Flow Matching with
-Optimal Transport paths (CFM-OT) instead of the DDPM epsilon-prediction loss.
+"""MotionEditor training with CFM-OT loss instead of DDPM epsilon-prediction.
 
-This is a *minimal-edit* drop-in replacement for MotionEditor's
-`train_adaptor.py`. The only changes versus the original are inside the
-inner training-loop block marked
+Drop-in for MotionEditor's `train_adaptor.py`; the only structural change is
+the inner loss block. Model, accelerator, dataloader, optimizer untouched.
 
-    # ====== Contribution A: CFM-OT loss replaces DDPM epsilon loss ======
-
-below (and a few imports / config fields at the top). Everything else —
-model loading, accelerator setup, dataloader, optimizer, validation
-plumbing — is byte-for-byte the same as `train_adaptor.py` so that any
-empirical comparison is fair.
-
-To run:
+Run:
     cd MotionEditor
     accelerate launch ../flow_matching_plugin/train_adaptor_fm.py \
         --config ../flow_matching_plugin/configs/train-motion-fm.yaml
-
-Author: Swetha (TCD dissertation, 2026).
 """
 
 import argparse
@@ -50,15 +38,12 @@ from transformers import CLIPTextModel, CLIPTokenizer, CLIPImageProcessor, CLIPV
 from einops import rearrange
 from diffusers import ControlNetModel
 
-# --- MotionEditor imports (run this script from inside the MotionEditor repo
-# so these resolve, or add the repo to PYTHONPATH).
 from motion_editor.models.unet_2d_condition import UNet2DConditionModel
 from motion_editor.data.dataset import VideoDataset
 from motion_editor.p2p.p2p_stable import AttentionReplace, AttentionRefine
 from motion_editor.p2p.ptp_utils import register_attention_control
 from motion_editor.pipelines.pipeline_motion_editor import MotionEditorPipeline
 
-# --- Contribution A imports
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
@@ -108,11 +93,9 @@ def main(
     resume_from_checkpoint: Optional[str] = None,
     checkpointing_steps: int = 500,
     one_stage_checkpoint: Optional[str] = None,
-    # ====== Contribution A: extra config knobs (with safe defaults) ======
-    loss_type: str = "cfm_ot",          # "cfm_ot" | "epsilon"
+    loss_type: str = "cfm_ot",
     flow_sigma_min: float = 0.0,
     flow_t_eps: float = 1e-5,
-    # =====================================================================
 ):
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -241,7 +224,7 @@ def main(
 
     total_batch_size = input_batch_size * accelerator.num_processes * gradient_accumulation_steps
 
-    logger.info("***** Running training (Contribution A: CFM-OT) *****")
+    logger.info("***** Running training (CFM-OT) *****")
     logger.info(f"  Num examples = {len(input_dataset)}")
     logger.info(f"  Num Epochs = {num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {input_batch_size}")
@@ -249,13 +232,11 @@ def main(
     logger.info(f"  Loss type = {loss_type}")
     logger.info(f"  Flow sigma_min = {flow_sigma_min}")
 
-    # ====== Contribution A: FM config built once, reused inside the loop ====
     fm_cfg = FlowMatchingConfig(
         sigma_min=float(flow_sigma_min),
         num_train_timesteps=int(noise_scheduler.num_train_timesteps),
         t_eps=float(flow_t_eps),
     )
-    # =======================================================================
 
     global_step = 0
     first_epoch = 0
@@ -303,23 +284,11 @@ def main(
                 source_skeleton = batch["source_conditions"]["openposefull"].to(weight_dtype)
                 encoder_hidden_states = text_encoder(batch["prompt_ids"])[0]
 
-                # ===========================================================
-                # ====== Contribution A: CFM-OT loss replaces DDPM eps ======
-                # ===========================================================
                 if loss_type == "cfm_ot":
-                    # x_1 is the clean data latent.
                     x_1 = latents
-
-                    # x_0 ~ N(0, I); sample t ~ U[eps, 1-eps]; build x_t and
-                    # target velocity in one call.
-                    x_t, t_cont, timesteps, target = build_fm_training_batch(
-                        x_1, fm_cfg
-                    )
+                    x_t, t_cont, timesteps, target = build_fm_training_batch(x_1, fm_cfg)
                     noisy_latents = x_t
-                    # `target` is the regression target (a velocity, not noise).
                 elif loss_type == "epsilon":
-                    # Baseline: behaviour identical to the original
-                    # `train_adaptor.py` (kept as an A/B-comparable fallback).
                     noise = torch.randn_like(latents)
                     bsz = latents.shape[0]
                     timesteps = torch.randint(
@@ -339,9 +308,7 @@ def main(
                     raise ValueError(
                         f"Unknown loss_type {loss_type!r}; expected 'cfm_ot' or 'epsilon'"
                     )
-                # ===========================================================
 
-                # ControlNet forward (unchanged from baseline) ---------------
                 controlnet_batch_size = 1
                 num_images_per_prompt = 1
                 do_classifier_free_guidance = False
@@ -378,9 +345,6 @@ def main(
                     mid_block_res_sample, "(b f) c h w -> b c f h w", f=video_length
                 )
 
-                # U-Net forward (unchanged from baseline). Under CFM-OT the
-                # output is now interpreted as a velocity field; the network
-                # itself has the same shape so no architecture changes.
                 model_pred = unet(
                     noisy_latents,
                     timesteps,
@@ -389,10 +353,6 @@ def main(
                     mid_block_additional_residual=mid_block_res_sample,
                 ).sample
 
-                # Both branches reduce to MSE against their respective targets.
-                # For CFM-OT, `target` is the velocity x_1 - (1-sigma_min)*x_0,
-                # built above by `build_fm_training_batch`. For epsilon, it is
-                # the noise (or v-prediction). MSE is identical from here on.
                 loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
 
                 avg_loss = accelerator.gather(loss.repeat(train_batch_size)).mean()

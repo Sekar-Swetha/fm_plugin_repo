@@ -1,28 +1,15 @@
-"""
-MediaPipe Pose -> OpenPose-COCO-18 skeleton renderer.
+"""MediaPipe Pose -> OpenPose-COCO-18 skeleton renderer.
 
-Drop-in replacement for the OpenPose preprocessing step used by MotionEditor
-(`data_preparation/video_skeletons.py`, `controlnet_aux.OpenposeDetector`).
-
-The output of `render_openpose_skeleton(...)` is *byte-for-byte compatible* with
-the input that the ControlNet-OpenPose checkpoint expects:
-  - canvas size = input image size
-  - black background
-  - 18 keypoints in COCO order (nose, neck, R/L shoulder/elbow/wrist,
-    R/L hip/knee/ankle, R/L eye/ear)
-  - 17 limbs drawn as oriented ellipses with controlnet_aux's exact RGB palette
-  - joint dots = circles radius 4, same colour as their incident limb
-
-This means the existing ControlNet weights work without retraining.
-
-Author: Swetha (TCD dissertation, 2026).
+Drop-in replacement for the OpenPose preprocessing step used by MotionEditor.
+Output of `render_openpose_skeleton(...)` is byte-compatible with what
+ControlNet-OpenPose expects (same canvas size, 18 keypoints in COCO order,
+17 limbs as oriented ellipses with controlnet_aux's palette).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -35,39 +22,21 @@ except ImportError as e:
     ) from e
 
 
-# ---------------------------------------------------------------------------
-# OpenPose COCO-18 spec (matches controlnet_aux.open_pose.util.draw_bodypose)
-# ---------------------------------------------------------------------------
-
 OPENPOSE_KEYPOINTS = [
-    "nose",          # 0
-    "neck",          # 1
-    "r_shoulder",    # 2
-    "r_elbow",       # 3
-    "r_wrist",       # 4
-    "l_shoulder",    # 5
-    "l_elbow",       # 6
-    "l_wrist",       # 7
-    "r_hip",         # 8
-    "r_knee",        # 9
-    "r_ankle",       # 10
-    "l_hip",         # 11
-    "l_knee",        # 12
-    "l_ankle",       # 13
-    "r_eye",         # 14
-    "l_eye",         # 15
-    "r_ear",         # 16
-    "l_ear",         # 17
+    "nose", "neck", "r_shoulder", "r_elbow", "r_wrist",
+    "l_shoulder", "l_elbow", "l_wrist",
+    "r_hip", "r_knee", "r_ankle",
+    "l_hip", "l_knee", "l_ankle",
+    "r_eye", "l_eye", "r_ear", "l_ear",
 ]
 
-# 1-indexed limb pairs, taken verbatim from controlnet_aux.open_pose.util.
+# Verbatim from controlnet_aux.open_pose.util (1-indexed).
 LIMB_SEQ_1IDX = [
     [2, 3], [2, 6], [3, 4], [4, 5], [6, 7], [7, 8], [2, 9], [9, 10],
     [10, 11], [2, 12], [12, 13], [13, 14], [2, 1], [1, 15], [15, 17],
     [1, 16], [16, 18],
 ]
 
-# Per-limb RGB colours, taken verbatim from controlnet_aux.open_pose.util.
 LIMB_COLORS_RGB = [
     [255, 0, 0],   [255, 85, 0],   [255, 170, 0],  [255, 255, 0],
     [170, 255, 0], [85, 255, 0],   [0, 255, 0],    [0, 255, 85],
@@ -76,9 +45,6 @@ LIMB_COLORS_RGB = [
     [255, 0, 170],
 ]
 
-# Joint-dot colour list — controlnet_aux uses an 18-entry list aligned with
-# the 18 keypoints. The values below are the controlnet_aux defaults
-# (the trailing entry [255, 0, 85] is for the 18th keypoint).
 JOINT_COLORS_RGB = [
     [255, 0, 0],   [255, 85, 0],   [255, 170, 0],  [255, 255, 0],
     [170, 255, 0], [85, 255, 0],   [0, 255, 0],    [0, 255, 85],
@@ -87,62 +53,41 @@ JOINT_COLORS_RGB = [
     [255, 0, 170], [255, 0, 85],
 ]
 
-
-# ---------------------------------------------------------------------------
-# MediaPipe -> OpenPose remap table
-# ---------------------------------------------------------------------------
 # MediaPipe BlazePose 33-landmark index -> OpenPose 18-keypoint index.
-# `None` means the OpenPose keypoint must be derived (e.g. neck = midpoint).
-# Reference for MediaPipe indices: mediapipe.solutions.pose.PoseLandmark.
+# OP 1 (neck) derived as midpoint of shoulders in code.
 MP_TO_OP = {
-    0:  0,   # OP nose       <- MP 0  nose
-    # OP 1 neck = midpoint(MP 11, MP 12)        # handled in code
-    2:  12,  # OP r_shoulder <- MP 12 right_shoulder
-    3:  14,  # OP r_elbow    <- MP 14 right_elbow
-    4:  16,  # OP r_wrist    <- MP 16 right_wrist
-    5:  11,  # OP l_shoulder <- MP 11 left_shoulder
-    6:  13,  # OP l_elbow    <- MP 13 left_elbow
-    7:  15,  # OP l_wrist    <- MP 15 left_wrist
-    8:  24,  # OP r_hip      <- MP 24 right_hip
-    9:  26,  # OP r_knee     <- MP 26 right_knee
-    10: 28,  # OP r_ankle    <- MP 28 right_ankle
-    11: 23,  # OP l_hip      <- MP 23 left_hip
-    12: 25,  # OP l_knee     <- MP 25 left_knee
-    13: 27,  # OP l_ankle    <- MP 27 left_ankle
-    14: 5,   # OP r_eye      <- MP 5  right_eye
-    15: 2,   # OP l_eye      <- MP 2  left_eye
-    16: 8,   # OP r_ear      <- MP 8  right_ear
-    17: 7,   # OP l_ear      <- MP 7  left_ear
+    0:  0,
+    2:  12,
+    3:  14,
+    4:  16,
+    5:  11,
+    6:  13,
+    7:  15,
+    8:  24,
+    9:  26,
+    10: 28,
+    11: 23,
+    12: 25,
+    13: 27,
+    14: 5,
+    15: 2,
+    16: 8,
+    17: 7,
 }
 
 
-# ---------------------------------------------------------------------------
-# Data containers
-# ---------------------------------------------------------------------------
-
 @dataclass
 class OpenPoseFrame:
-    """One frame's worth of OpenPose-format keypoints.
-
-    `keypoints` is shape (18, 3): each row is (x_px, y_px, confidence).
-    A keypoint with confidence < `min_conf` is treated as missing and its
-    (x, y) are set to (-1, -1); downstream rendering skips it.
-    """
-    keypoints: np.ndarray  # (18, 3) float32
+    keypoints: np.ndarray  # (18, 3) float32: (x_px, y_px, confidence)
     width: int
     height: int
 
     def missing_mask(self) -> np.ndarray:
-        """Boolean (18,) — True where the keypoint is missing."""
         return self.keypoints[:, 0] < 0
 
     def num_detected(self) -> int:
         return int(np.sum(~self.missing_mask()))
 
-
-# ---------------------------------------------------------------------------
-# Remap: MediaPipe landmarks -> OpenPose 18 keypoints
-# ---------------------------------------------------------------------------
 
 def mediapipe_to_openpose(
     mp_landmarks,
@@ -150,21 +95,6 @@ def mediapipe_to_openpose(
     height: int,
     min_conf: float = 0.3,
 ) -> OpenPoseFrame:
-    """Convert a MediaPipe pose-landmark result into an OpenPose-18 frame.
-
-    Parameters
-    ----------
-    mp_landmarks
-        A `mediapipe.solutions.pose` `pose_landmarks` object (i.e. the
-        `.pose_landmarks` attribute of `pose.process(...).pose_landmarks`).
-        Each landmark has `.x`, `.y` in [0, 1] and `.visibility` in [0, 1].
-        Pass `None` for a frame where MediaPipe failed to detect a pose; the
-        returned frame will have all keypoints marked missing.
-    width, height
-        Pixel dimensions of the source frame.
-    min_conf
-        Visibility threshold. Landmarks below this are marked missing.
-    """
     kp = np.full((18, 3), -1.0, dtype=np.float32)
     if mp_landmarks is None:
         return OpenPoseFrame(kp, width, height)
@@ -175,13 +105,11 @@ def mediapipe_to_openpose(
         lm = lms[mp_idx]
         return float(lm.x) * width, float(lm.y) * height, float(lm.visibility)
 
-    # Direct 1-to-1 mapping.
     for op_idx, mp_idx in MP_TO_OP.items():
         x, y, v = _pt(mp_idx)
         if v >= min_conf:
             kp[op_idx] = [x, y, v]
 
-    # OP 1 = neck = midpoint of shoulders if both shoulders are visible.
     ls = lms[11]; rs = lms[12]
     if ls.visibility >= min_conf and rs.visibility >= min_conf:
         nx = 0.5 * (ls.x + rs.x) * width
@@ -192,30 +120,16 @@ def mediapipe_to_openpose(
     return OpenPoseFrame(kp, width, height)
 
 
-# ---------------------------------------------------------------------------
-# Rendering — byte-compatible with controlnet_aux.open_pose.util.draw_bodypose
-# ---------------------------------------------------------------------------
-
 def render_openpose_skeleton(frame: OpenPoseFrame, stickwidth: int = 4) -> np.ndarray:
-    """Render the 18-keypoint OpenPose skeleton on a black canvas.
+    """Render 18-keypoint OpenPose skeleton on black canvas.
 
-    The drawing algorithm is a faithful reproduction of
-    `controlnet_aux.open_pose.util.draw_bodypose` so that the resulting PNG
-    looks identical to what the ControlNet-OpenPose preprocessor would emit
-    given the same keypoints.
-
-    Returns a uint8 BGR image of shape (height, width, 3). Save it directly
-    with `cv2.imwrite(...)`.
+    Faithful reproduction of `controlnet_aux.open_pose.util.draw_bodypose`:
+    dots are drawn first, then limb ellipses are blended via addWeighted.
     """
     H, W = frame.height, frame.width
     canvas = np.zeros((H, W, 3), dtype=np.uint8)
     kp = frame.keypoints
 
-    # 1) Limbs — drawn first (controlnet_aux order: ellipses then dots, but
-    # the dot loop is also drawn over the limbs because dot loop runs first
-    # in the upstream code? Actually in controlnet_aux the dot loop runs
-    # FIRST and limbs second, then `addWeighted` blends them — so circles get
-    # partly painted over. We replicate that order exactly.)
     for i in range(18):
         if kp[i, 0] < 0:
             continue
@@ -249,15 +163,10 @@ def render_openpose_skeleton(frame: OpenPoseFrame, stickwidth: int = 4) -> np.nd
     return canvas
 
 
-# ---------------------------------------------------------------------------
-# High-level convenience: process a folder / video end-to-end.
-# ---------------------------------------------------------------------------
-
 class MediaPipeOpenPoseExtractor:
     """Stateful wrapper around `mp.solutions.pose.Pose`.
 
-    Use one instance per video (MediaPipe Pose has internal tracking state
-    that benefits from temporal continuity).
+    Use one instance per video — Pose has internal tracking state.
     """
 
     def __init__(
@@ -287,7 +196,6 @@ class MediaPipeOpenPoseExtractor:
         self._pose.close()
 
     def extract(self, bgr_image: np.ndarray) -> OpenPoseFrame:
-        """Run MediaPipe on a BGR image; return OpenPose-format keypoints."""
         if bgr_image.ndim != 3 or bgr_image.shape[2] != 3:
             raise ValueError(
                 f"Expected BGR image (H,W,3); got shape {bgr_image.shape}"
@@ -300,6 +208,5 @@ class MediaPipeOpenPoseExtractor:
         )
 
     def extract_and_render(self, bgr_image: np.ndarray) -> tuple[OpenPoseFrame, np.ndarray]:
-        """Extract + render in one shot. Returns (frame, BGR skeleton image)."""
         f = self.extract(bgr_image)
         return f, render_openpose_skeleton(f)

@@ -95,22 +95,6 @@ accelerate launch ../../flow_matching_plugin/train_adaptor_fm.py \
     --config ../../flow_matching_plugin/configs/train-motion-fm.yaml
 ```
 
-## Roadmap
-
-See `MotionEditor_Gap_Analysis.md` (in the dissertation folder, not in
-this repo) for the full plan. In short:
-
-- [x] **Contribution A** — CFM-OT training loss (this repo).
-- [ ] **Contribution B** — Replace DDIM inversion + null-text
-  optimisation with backward-Euler ODE inversion using the trained
-  velocity field.
-- [ ] **Contribution C** — Reflow (Liu et al. 2022), with the novel
-  variant being **transport reflow**: train a second flow on
-  `(source-pose latent, target-pose latent)` pairs, removing inversion
-  from inference entirely.
-- [ ] **Contribution D** — OpenPose-based motion-fidelity metric for
-  evaluation.
-
 ## Python version note
 
 MediaPipe pinned to `<0.10.21` because newer releases removed the

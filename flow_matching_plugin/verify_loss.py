@@ -1,26 +1,10 @@
-"""
-Empirical-proof generator for Contribution A. Runs a *closed-system* sanity
-check: trains a tiny MLP velocity model with the new CFM-OT loss on a known
-2-D toy distribution and emits PNG plots showing
+"""Toy 2-D sanity check for the CFM-OT loss.
 
-  1. loss curve over training steps,
-  2. before/after histogram of samples vs. data,
-  3. trajectories of sampled points x_0 -> x_1 (straight lines = OT path),
-  4. integrated-vs-true paired samples (deterministic coupling).
-
-The goal is not to demonstrate state-of-the-art — it is to give the
-supervisor a one-glance picture that the loss code is correct, the model
-*can* be trained with it, and the resulting samples land where the OT theory
-predicts. None of this needs MotionEditor, ControlNet, or a GPU.
+Trains a tiny MLP velocity model on two-moons and emits loss curve, sample
+plots, and a markdown report. CPU-only, no MotionEditor or GPU needed.
 
 Usage:
     python verify_loss.py --out proofs/
-
-Outputs (under `proofs/`):
-    loss_curve.png
-    samples_before_after.png
-    straight_paths.png
-    report.md
 """
 
 from __future__ import annotations
@@ -33,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Headless backend so this runs on a server without a display.
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
@@ -47,8 +30,6 @@ from flow_matching_loss import (  # noqa: E402
 
 
 def make_two_moons(n: int) -> torch.Tensor:
-    """2-D 'two moons' dataset — a non-Gaussian target with enough structure
-    to be visually obvious whether the model learnt it or not."""
     rng = np.random.default_rng(0)
     t = rng.uniform(0, np.pi, size=n // 2)
     x0 = np.stack([np.cos(t), np.sin(t)], axis=1)
@@ -59,7 +40,6 @@ def make_two_moons(n: int) -> torch.Tensor:
 
 
 class TinyV(torch.nn.Module):
-    """Tiny MLP velocity field v_theta(x, t) : R^2 x R -> R^2."""
     def __init__(self, hidden: int = 128):
         super().__init__()
         self.net = torch.nn.Sequential(
@@ -108,17 +88,15 @@ def main():
         opt.zero_grad(); loss.backward(); opt.step()
         losses.append(loss.item())
 
-    # ---- Plot 1: loss curve ------------------------------------------------
     plt.figure(figsize=(6, 4))
     plt.plot(losses, lw=0.6)
     plt.xlabel("step"); plt.ylabel("CFM-OT loss")
-    plt.title("Contribution A: CFM-OT loss converges on toy 2-D data")
+    plt.title("CFM-OT loss on toy 2-D data")
     plt.grid(alpha=0.3)
     plt.tight_layout()
     plt.savefig(out / "loss_curve.png", dpi=120)
     plt.close()
 
-    # ---- Sampling from the trained model ----------------------------------
     def velocity_fn(x, t_idx):
         t_cont = t_idx.float() / (cfg.num_train_timesteps - 1)
         return v(x, t_cont)
@@ -126,12 +104,9 @@ def main():
     torch.manual_seed(args.seed + 1)
     x0 = torch.randn(2048, 2)
 
-    # Sample with 1 Euler step and 10 Euler steps to show OT-paths are
-    # already nearly-straight even before any reflow.
     samples_1step = euler_sample(velocity_fn, x0, num_steps=1, config=cfg)
     samples_10step = euler_sample(velocity_fn, x0, num_steps=10, config=cfg)
 
-    # ---- Plot 2: samples before / after -----------------------------------
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     for ax, pts, title in zip(
         axes,
@@ -145,8 +120,6 @@ def main():
     plt.savefig(out / "samples_before_after.png", dpi=120)
     plt.close()
 
-    # ---- Plot 3: trajectories (OT paths) ----------------------------------
-    # Track 30 trajectories over 20 Euler steps and plot lines.
     N_traj = 30; N_step = 20
     x = torch.randn(N_traj, 2)
     trajs = [x.clone()]
@@ -157,7 +130,7 @@ def main():
         with torch.no_grad():
             x = x + dt * velocity_fn(x, t_for)
         trajs.append(x.clone())
-    trajs = torch.stack(trajs, dim=0).numpy()  # (N_step+1, N_traj, 2)
+    trajs = torch.stack(trajs, dim=0).numpy()
 
     plt.figure(figsize=(6, 6))
     plt.scatter(data[:, 0].numpy(), data[:, 1].numpy(), s=3, alpha=0.2, c="grey", label="data")
@@ -165,21 +138,18 @@ def main():
         plt.plot(trajs[:, j, 0], trajs[:, j, 1], lw=0.6, alpha=0.6)
     plt.scatter(trajs[0, :, 0], trajs[0, :, 1], s=20, c="red", label="x_0 (noise)")
     plt.scatter(trajs[-1, :, 0], trajs[-1, :, 1], s=20, c="green", label="x_1 (sampled)")
-    plt.title("OT trajectories under trained v_theta\n(should look nearly straight)")
+    plt.title("OT trajectories under trained v_theta")
     plt.legend(); plt.grid(alpha=0.3); plt.gca().set_aspect("equal")
     plt.tight_layout()
     plt.savefig(out / "straight_paths.png", dpi=120)
     plt.close()
 
-    # ---- Quantitative stats ------------------------------------------------
     def _stats(pts):
         return pts.mean(0).tolist(), pts.std(0).tolist()
     data_m, data_s = _stats(data.numpy())
     s1_m, s1_s = _stats(samples_1step.detach().numpy())
     s10_m, s10_s = _stats(samples_10step.detach().numpy())
 
-    # Mean trajectory deviation from straight-line interpolation between the
-    # endpoints of each trajectory. Smaller = straighter paths.
     starts = trajs[0]
     ends = trajs[-1]
     interp_lines = (
@@ -188,11 +158,10 @@ def main():
     )
     path_dev = float(np.mean(np.linalg.norm(trajs - interp_lines, axis=-1)))
 
-    # ---- Report ------------------------------------------------------------
     final_loss = float(np.mean(losses[-200:]))
     initial_loss = float(np.mean(losses[:200]))
     lines = [
-        "# Contribution A — CFM-OT empirical proof",
+        "# CFM-OT empirical proof",
         "",
         "## Setup",
         "- Toy data: two-moons, 2-D, 2048 points.",
@@ -204,46 +173,14 @@ def main():
         f"- Loss(first 200 steps avg)  = **{initial_loss:.4f}**",
         f"- Loss(last 200 steps avg)   = **{final_loss:.4f}**",
         f"- Ratio (first / last)        = **{initial_loss / max(final_loss, 1e-9):.1f}x**",
-        "- See `loss_curve.png` — a monotone-ish decrease confirms gradients flow correctly.",
         "",
         "## Sample distribution (mean, std per dim)",
         f"- Data:                       mean={data_m}, std={data_s}",
         f"- 1-step Euler samples:       mean={s1_m}, std={s1_s}",
         f"- 10-step Euler samples:      mean={s10_m}, std={s10_s}",
-        "- The 1-step and 10-step distributions should both visually resemble",
-        "  the two-moons shape. The 1-step result already being close confirms",
-        "  the OT path is nearly straight after training — the same property",
-        "  that makes rectified flow's 1-Euler-step generation work.",
-        "- See `samples_before_after.png`.",
         "",
         "## Path straightness",
         f"- Mean per-step deviation from straight-line interpolation: **{path_dev:.4f}**",
-        "  - Smaller is straighter. Diffusion-path trajectories typically",
-        "    show deviations 10x larger than OT-path trajectories on the",
-        "    same model size.",
-        "- See `straight_paths.png` — lines should look mostly straight.",
-        "",
-        "## What this proves",
-        "1. The CFM-OT loss in `flow_matching_loss.py` produces correct,",
-        "   non-zero gradients for a small velocity network.",
-        "2. Training the network with this loss recovers a deterministic",
-        "   coupling between Gaussian noise and the target distribution.",
-        "3. The recovered coupling has near-straight OT paths (visual",
-        "   evidence + numeric deviation), confirming the OT-path property",
-        "   from Lipman et al. 2023, Sec. 4.1.",
-        "4. The 1-Euler-step generation property of rectified flow holds",
-        "   here at sigma_min = 0 — confirming the theoretical equivalence",
-        "   of OT-CFM and rectified flow's training target.",
-        "",
-        "## What this does *not* prove (and why it's still sufficient)",
-        "- It does not prove the loss is correct for the full Stable Diffusion",
-        "  U-Net + ControlNet stack used by MotionEditor.",
-        "- Correctness of the *loss* is independent of the network: the loss",
-        "  is `MSE(v_theta, x_1 - (1-sigma_min)*x_0)` and the only variable",
-        "  is whether `v_theta` is expressive enough. The same loss code is",
-        "  what `train_adaptor_fm.py` plugs into MotionEditor.",
-        "- Empirical convergence on the full pipeline is what the supervisor",
-        "  validates on a GPU box; see `README.md` for the run command.",
     ]
     (out / "report.md").write_text("\n".join(lines))
     print(f"Wrote proofs to {out}/")
