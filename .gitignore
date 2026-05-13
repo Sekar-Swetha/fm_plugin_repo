@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual envs
+venv/
+.venv/
+env/
+.env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Outputs / checkpoints (download separately per MotionEditor README)
+motionEditor/MotionEditor/checkpoints/
+motionEditor/MotionEditor/outputs/
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# Local-only artefacts (regenerable via verify scripts)
+flow_matching_plugin/proofs/__pycache__/

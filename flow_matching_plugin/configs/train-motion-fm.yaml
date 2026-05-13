@@ -1,0 +1,72 @@
+# MotionEditor training config — Contribution A (CFM-OT).
+#
+# This file is a copy of `MotionEditor/configs/case-1/train-motion.yaml` with
+# three new fields appended at the bottom: `loss_type`, `flow_sigma_min`,
+# `flow_t_eps`. All other hyper-parameters are unchanged so that any
+# comparison vs. baseline is apples-to-apples.
+
+pretrained_model_path: checkpoints/stable-diffusion-v1-5
+output_dir: "outputs/train-case-1-motion-fm"
+one_stage_checkpoint: "outputs/train-case-1-motion-fm/checkpoint-300-fm"
+
+input_data:
+  video_dir: "data/case-1"
+  prompt: "a girl is dancing"
+  n_sample_frames: 8
+  width: 512
+  height: 512
+  sample_start_idx: 0
+  sample_frame_rate: 1
+  condition: [openposefull]
+  video_suffix: .png
+  condition_suffix: .png
+  noise_level: 10000
+  image_embed_drop: 0.1
+  source_mask_dir: man.mask
+
+validation_data:
+  prompts:
+    - "a girl is dancing"
+  video_length: 8
+  width: 512
+  height: 512
+  num_inference_steps: 50
+  guidance_scale: 7.5
+  num_inv_steps: 50
+  use_null_inv: True
+  null_inner_steps: 1
+  null_base_lr: 1e-2
+  null_uncond_ratio: -0.5
+  null_normal_infer: True
+  controlnet_conditioning_scale: 1.0
+
+input_batch_size: 1
+seed: 33
+gradient_checkpointing: True
+enable_xformers_memory_efficient_attention: True
+use_sc_attn: True
+use_st_attn: False
+st_attn_idx: 0
+
+max_train_steps: 300
+checkpointing_steps: 300
+validation_steps: 300
+learning_rate: 3e-5
+use_8bit_adam: False
+mixed_precision: "fp16"
+trainable_modules:
+  - "attn1.to_q"
+  - "attn2.to_q"
+  - "attn_temp"
+
+# ====== Contribution A (CFM-OT) settings ======
+# loss_type:
+#   "cfm_ot"  — Conditional Flow Matching with OT path (this work).
+#   "epsilon" — Baseline DDPM eps-prediction (identical to original
+#               train_adaptor.py; useful for A/B comparison).
+loss_type: cfm_ot
+# sigma_min = 0.0 gives the ideal OT (straight-line) path between Gaussian
+# noise and data — identical to rectified flow's training target. Set to a
+# small positive value (e.g. 1e-4) if you observe numerical issues near t=1.
+flow_sigma_min: 0.0
+flow_t_eps: 1e-5
