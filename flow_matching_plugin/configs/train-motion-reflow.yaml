@@ -1,0 +1,47 @@
+# MotionEditor reflow config — Contribution C.
+#
+# Layers on top of `train-motion-fm.yaml` (Contribution A). The pair generator
+# (`generate_reflow_pairs.py`) and the trainer (`train_reflow.py`) share this
+# file so seed, generating checkpoint, and NFE are pinned in one place.
+
+pretrained_model_path: checkpoints/stable-diffusion-v1-5
+output_dir: "outputs/train-case-1-reflow"
+
+input_data:
+  video_dir: "data/case-1"
+  prompt: "a girl is dancing"
+  n_sample_frames: 8
+  width: 512
+  height: 512
+  condition: [openposefull]
+  video_suffix: .png
+  condition_suffix: .png
+
+input_batch_size: 1
+seed: 33
+max_train_steps: 500
+checkpointing_steps: 500
+learning_rate: 1e-4
+mixed_precision: "fp16"
+trainable_modules:
+  - "attn1.to_q"
+  - "attn2.to_q"
+  - "attn_temp"
+
+# ====== Contribution C (reflow) settings ======
+# loss_type MUST be cfm_ot — reflow on an epsilon head is undefined.
+# train_reflow.py asserts this on startup.
+loss_type: cfm_ot
+flow_sigma_min: 0.0
+flow_t_eps: 1e-5
+
+# c1 (noise -> data, generation reflow) or c2 (source -> target, transport reflow).
+reflow_mode: c1
+# Directory of pre-generated pairs from generate_reflow_pairs.py.
+reflow_pairs_dir: "runs/pairs-c1/"
+# Tag for checkpoint naming; bump to 2 for a 2-rectified flow.
+reflow_round: 1
+# Path to the Contribution A checkpoint to initialise the U-Net from (required).
+init_checkpoint: "outputs/train-case-1-motion-fm/checkpoint-300-fm"
+# NFE used when generating the pairs (governs pair quality).
+num_pair_gen_steps: 8
