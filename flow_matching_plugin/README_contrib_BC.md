@@ -17,13 +17,14 @@ Both build on a U-Net trained with `train_adaptor_fm.py` from Contribution A.
 | Piece | File | State |
 |---|---|---|
 | Backward/forward ODE integrators | `flow_inversion.py` | Implemented |
-| `MotionEditorFlowInversion` wrapper | `flow_inversion.py` | Implemented (not yet wired into `inference.py`) |
+| `MotionEditorFlowInversion` wrapper | `flow_inversion.py` | Implemented |
 | Unit tests for B | `tests/test_inversion.py` | Implemented |
-| Inference-site patch (MotionEditor) | `motionEditor/inference.py` | **TODO** — Section B.2 |
-| Pair-generation script (C1 + C2) | `generate_reflow_pairs.py` | **TODO** — Section C.2 |
-| Reflow trainer | `train_reflow.py` | **TODO** — Section C.3 |
-| Reflow config | `configs/train-motion-reflow.yaml` | **TODO** — Section C.4 |
-| Reflow proofs / verify | `verify_reflow.py`, `proofs/` | **TODO** — Section C.5 |
+| Inference-site patch (MotionEditor) | `motionEditor/MotionEditor/inference.py` | Implemented (gated by `use_flow_inversion`); **needs GPU run to validate** |
+| Pair-generation script (C1 + C2) | `generate_reflow_pairs.py` | Implemented (real `--records`/`--checkpoint` + `--stub`) |
+| Reflow trainer | `train_reflow.py` | Implemented (real `--init-checkpoint` + `--stub`) |
+| Reflow config | `configs/train-motion-reflow.yaml` | Implemented |
+| Reflow proofs / verify | `verify_reflow.py`, `proofs/` | Implemented (toy 2-D; real-clip rows GPU-only) |
+| Unit tests for C | `tests/test_reflow.py` | Implemented |
 
 ---
 

@@ -18,6 +18,9 @@ from flow_inversion import flow_sample  # noqa: E402
 from generate_reflow_pairs import (  # noqa: E402
     ReflowRecord,
     generate_pairs,
+    load_records,
+    real_velocity_factory,
+    save_records,
     save_shards,
 )
 from train_reflow import ReflowPairDataset, reflow_training_step  # noqa: E402
@@ -84,6 +87,70 @@ class TestPairGeneratorShapes(unittest.TestCase):
     def test_invalid_mode_raises(self):
         with self.assertRaises(ValueError):
             generate_pairs([], _stub_factory(64, 4), "c3")
+
+
+class TestRealDataMode(unittest.TestCase):
+    """Contribution C real-data path: pre-encoded latents in -> pairs out,
+    no synthetic stub, no GPU. (`generate_reflow_pairs` real mode.)"""
+
+    def _records(self, n=3):
+        return [ReflowRecord(
+            z_src=torch.randn(4, 2, 8, 8),
+            cond_src=torch.randn(3, 16, 16),
+            cond_tgt=torch.randn(3, 16, 16),
+        ) for _ in range(n)]
+
+    def test_save_then_load_records_roundtrip(self):
+        _seed(3)
+        recs = self._records(3)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "records.pt")
+            save_records(recs, path)
+            loaded = load_records(path)
+        self.assertEqual(len(loaded), 3)
+        for a, b in zip(recs, loaded):
+            self.assertTrue(torch.allclose(a.z_src, b.z_src))
+            self.assertTrue(torch.allclose(a.cond_src, b.cond_src))
+            self.assertTrue(torch.allclose(a.cond_tgt, b.cond_tgt))
+
+    def test_real_velocity_factory_from_stub_unet(self):
+        """real_velocity_factory wraps a (real-signature) U-Net into the
+        velocity closure generate_pairs needs. Driven here by a stub U-Net so
+        no checkpoint/GPU is required."""
+        _seed(4)
+
+        class StubUNet:
+            # Mirrors a diffusers U-Net: (sample, timestep, **kwargs) -> obj.sample
+            def __call__(self, x_t, t_idx, **kwargs):
+                class Out:
+                    pass
+                o = Out()
+                o.sample = x_t * 0.5
+                return o
+
+        factory = real_velocity_factory(StubUNet())
+        cond = torch.randn(3, 16, 16)
+        vf = factory(cond)
+        x_t = torch.randn(1, 4, 2, 8, 8)
+        v = vf(x_t, torch.zeros(1, dtype=torch.long))
+        self.assertEqual(v.shape, x_t.shape)
+        self.assertTrue(torch.allclose(v, x_t * 0.5))
+
+    def test_real_factory_end_to_end_pairs(self):
+        """real_velocity_factory + generate_pairs produces real-shaped pairs."""
+        _seed(5)
+
+        class StubUNet:
+            def __call__(self, x_t, t_idx, **kwargs):
+                return x_t * 0.5  # bare-tensor return also supported
+
+        recs = self._records(2)
+        factory = real_velocity_factory(StubUNet())
+        pairs = generate_pairs(recs, factory, "c1", num_steps=2, method="euler")
+        self.assertEqual(len(pairs), 2)
+        z0, z1, cond = pairs[0]
+        self.assertEqual(z0.shape, (4, 2, 8, 8))
+        self.assertEqual(cond.shape, (3, 16, 16))
 
 
 class TestReflowLossMatchesCFM(unittest.TestCase):

@@ -125,12 +125,38 @@ def _cycle(dataset: ReflowPairDataset, batch_size: int) -> Iterator:
             yield batch
 
 
+def load_motioneditor_velocity_model(init_checkpoint: str):
+    """Real path: init the MotionEditor CFM-OT U-Net from the Contribution A
+    checkpoint and adapt its forward to `(x_t, t_idx, cond) -> v`. Imports are
+    deferred so the module runs without the MotionEditor environment.
+
+    Returns `(model, model_call)` where `model_call(model, x_t, t_idx, cond)`
+    feeds the U-Net its skeleton conditioning the same way inference does."""
+    try:
+        from motion_editor.models.unet_2d_condition import UNet2DConditionModel
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        raise SystemExit(
+            "Real reflow training needs the MotionEditor package importable "
+            f"(motion_editor.models...). Import failed: {exc}\n"
+            "Run from the MotionEditor repo env (GPU), or use --stub for a CPU "
+            "dev pass on the same pair shards."
+        )
+    model = UNet2DConditionModel.from_pretrained(init_checkpoint)
+
+    def model_call(m, x_t, t_idx, cond):
+        out = m(x_t, t_idx, encoder_hidden_states=None, controlnet_cond=cond)
+        return out.sample if hasattr(out, "sample") else out
+
+    return model, model_call
+
+
 def main():
     ap = argparse.ArgumentParser(description="Reflow trainer (Contribution C).")
     ap.add_argument("--config", type=str, default=None)
     ap.add_argument("--reflow-pairs-dir", type=str, required=True)
     ap.add_argument("--reflow-round", type=int, default=1)
-    ap.add_argument("--init-checkpoint", type=str, default=None)
+    ap.add_argument("--init-checkpoint", type=str, default=None,
+                    help="Contribution A CFM-OT U-Net checkpoint (real mode).")
     ap.add_argument("--loss-type", type=str, default="cfm_ot")
     ap.add_argument("--num-steps", type=int, default=300)
     ap.add_argument("--batch-size", type=int, default=2)
@@ -145,29 +171,33 @@ def main():
     ds = ReflowPairDataset(args.reflow_pairs_dir)
     loader = _cycle(ds, args.batch_size)
 
-    if not args.stub:
+    if args.stub:
+        z0, _, cond = ds[0]
+        latent_ch = z0.shape[0]
+        cond_dim = cond.numel()
+
+        class StubVelocity(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = torch.nn.Linear(cond_dim, latent_ch)
+                self.scale = torch.nn.Parameter(torch.tensor(0.5))
+
+            def forward(self, x_t, t_idx, cond):
+                b = self.proj(cond.flatten(1).float()).view(cond.shape[0], -1,
+                                                            *([1] * (x_t.dim() - 2)))
+                return self.scale * x_t + 0.1 * b
+
+        model, model_call = StubVelocity(), None
+    elif args.init_checkpoint is not None:
+        model, model_call = load_motioneditor_velocity_model(args.init_checkpoint)
+    else:
         raise SystemExit(
-            "Real reflow training needs the MotionEditor U-Net initialised from "
-            "--init-checkpoint (GPU). Run with --stub for a CPU dev pass."
+            "Real reflow training needs --init-checkpoint (the Contribution A "
+            "CFM-OT U-Net). Run with --stub for a CPU dev pass."
         )
 
-    z0, _, cond = ds[0]
-    latent_ch = z0.shape[0]
-    cond_dim = cond.numel()
-
-    class StubVelocity(torch.nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.proj = torch.nn.Linear(cond_dim, latent_ch)
-            self.scale = torch.nn.Parameter(torch.tensor(0.5))
-
-        def forward(self, x_t, t_idx, cond):
-            b = self.proj(cond.flatten(1).float()).view(cond.shape[0], -1,
-                                                         *([1] * (x_t.dim() - 2)))
-            return self.scale * x_t + 0.1 * b
-
-    model = StubVelocity()
-    losses = train(model, loader, num_steps=args.num_steps, lr=args.lr, config=cfg)
+    losses = train(model, loader, num_steps=args.num_steps, lr=args.lr,
+                   config=cfg, model_call=model_call)
 
     out = Path(args.out) / f"checkpoint-reflow-{args.reflow_round}"
     out.mkdir(parents=True, exist_ok=True)

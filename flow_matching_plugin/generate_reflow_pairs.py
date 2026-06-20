@@ -27,7 +27,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import torch
 
 from flow_matching_loss import FlowMatchingConfig
-from flow_inversion import flow_invert, flow_sample
+from flow_inversion import flow_invert, flow_sample, make_velocity_fn
 
 Pair = Tuple[torch.Tensor, torch.Tensor, torch.Tensor]  # (z0, z1, cond)
 VelocityFnFactory = Callable[[torch.Tensor], Callable]
@@ -119,6 +119,58 @@ def save_shards(
     return written
 
 
+def save_records(records: Sequence[ReflowRecord], path: str) -> str:
+    """Persist a list of ReflowRecord (VAE-encoded clip + skeleton conds) to a
+    single `.pt`. Lets the heavy VAE-encode step run once (e.g. inside the
+    MotionEditor env) and feed `generate_pairs` later on any machine."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "z_src": [r.z_src for r in records],
+        "cond_src": [r.cond_src for r in records],
+        "cond_tgt": [r.cond_tgt for r in records],
+    }
+    torch.save(payload, path)
+    return path
+
+
+def load_records(path: str) -> List[ReflowRecord]:
+    """Inverse of `save_records`."""
+    d = torch.load(path, map_location="cpu", weights_only=True)
+    return [
+        ReflowRecord(z_src=z, cond_src=cs, cond_tgt=ct)
+        for z, cs, ct in zip(d["z_src"], d["cond_src"], d["cond_tgt"])
+    ]
+
+
+def real_velocity_factory(
+    unet,
+    *,
+    controlnet=None,
+    text_encoder=None,
+    prompt_ids=None,
+    prepare_image_fn=None,
+) -> VelocityFnFactory:
+    """Build the `cond -> velocity_fn` factory `generate_pairs` expects from a
+    real (or stub) MotionEditor U-Net, reusing `flow_inversion.make_velocity_fn`
+    so pair generation and inversion share one forward path.
+
+    `cond` is the skeleton conditioning for that clip; each call re-binds the
+    closure to the right condition (source for the C2 inversion leg, target for
+    the sampling leg)."""
+
+    def factory(cond: torch.Tensor):
+        return make_velocity_fn(
+            unet,
+            cond,
+            controlnet=controlnet,
+            text_encoder=text_encoder,
+            prompt_ids=prompt_ids,
+            prepare_image_fn=prepare_image_fn,
+        )
+
+    return factory
+
+
 def checkpoint_hash(path: Optional[str]) -> str:
     if path is None or not os.path.exists(path):
         return "none"
@@ -148,6 +200,26 @@ def _stub_velocity_factory(cond_dim: int, latent_ch: int, seed: int = 0):
     return factory
 
 
+def load_motioneditor_velocity_factory(checkpoint: str):
+    """Real path: build a velocity factory from a MotionEditor CFM-OT U-Net
+    checkpoint. Imports are deferred so the rest of this module runs without the
+    MotionEditor environment installed."""
+    try:
+        import torch as _torch  # noqa: F401
+        # MotionEditor's U-Net lives in its own package; import lazily.
+        from motion_editor.models.unet_2d_condition import UNet2DConditionModel
+    except Exception as exc:  # pragma: no cover - environment-dependent
+        raise SystemExit(
+            "Real pair generation needs the MotionEditor package importable "
+            f"(motion_editor.models...). Import failed: {exc}\n"
+            "Run from the MotionEditor repo env, or use --records + --stub-model "
+            "to feed pre-encoded latents through a placeholder velocity field."
+        )
+    unet = UNet2DConditionModel.from_pretrained(checkpoint)
+    unet.eval()
+    return real_velocity_factory(unet)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate reflow pairs (Contribution C).")
     ap.add_argument("--config", type=str, default=None, help="train-motion-reflow.yaml")
@@ -157,32 +229,52 @@ def main():
     ap.add_argument("--method", choices=["euler", "heun"], default="heun")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--reflow-round", type=int, default=1)
-    ap.add_argument("--checkpoint", type=str, default=None)
+    ap.add_argument("--checkpoint", type=str, default=None,
+                    help="MotionEditor CFM-OT U-Net checkpoint (real mode).")
+    ap.add_argument("--records", type=str, default=None,
+                    help="Pre-encoded ReflowRecord file (from save_records). Real "
+                         "mode: VAE-encode clips once in the MotionEditor env, save, "
+                         "then generate pairs anywhere.")
     ap.add_argument("--stub", action="store_true",
                     help="Use a tiny CPU velocity stub instead of a real checkpoint.")
+    ap.add_argument("--stub-model", action="store_true",
+                    help="With --records: use the CPU velocity stub instead of a "
+                         "real checkpoint (dev pass on real latents).")
     ap.add_argument("--num-clips", type=int, default=4, help="(stub mode) synthetic clips.")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     cfg = FlowMatchingConfig()
 
-    if not args.stub:
-        raise SystemExit(
-            "Real-checkpoint pair generation needs the MotionEditor U-Net + VAE "
-            "(GPU). Run with --stub for a CPU dev pass, or wire load via --config."
-        )
-
-    # Synthetic records for the stub path.
-    latent_ch, F, H, W = 4, 4, 8, 8
-    cond_dim = 64
-    records = []
-    for _ in range(args.num_clips):
-        records.append(ReflowRecord(
+    # --- Resolve records ---------------------------------------------------
+    if args.records is not None:
+        records = load_records(args.records)
+        latent_ch = records[0].z_src.shape[0]
+        cond_dim = records[0].cond_tgt.numel()
+    elif args.stub:
+        latent_ch, F, H, W = 4, 4, 8, 8
+        cond_dim = 64
+        records = [ReflowRecord(
             z_src=torch.randn(latent_ch, F, H, W),
             cond_src=torch.randn(cond_dim),
             cond_tgt=torch.randn(cond_dim),
-        ))
-    factory = _stub_velocity_factory(cond_dim, latent_ch, seed=args.seed)
+        ) for _ in range(args.num_clips)]
+    else:
+        raise SystemExit(
+            "Provide --records (real pre-encoded latents) or --stub (synthetic). "
+            "See README_contrib_BC.md C.2 / C.6."
+        )
+
+    # --- Resolve velocity factory -----------------------------------------
+    if args.stub or args.stub_model:
+        factory = _stub_velocity_factory(cond_dim, latent_ch, seed=args.seed)
+    elif args.checkpoint is not None:
+        factory = load_motioneditor_velocity_factory(args.checkpoint)
+    else:
+        raise SystemExit(
+            "Real mode needs --checkpoint (a MotionEditor CFM-OT U-Net) or "
+            "--stub-model (placeholder velocity on real latents)."
+        )
 
     pairs = generate_pairs(records, factory, args.mode, args.num_steps, args.method, cfg)
     meta = {
@@ -202,6 +294,9 @@ __all__ = [
     "ReflowRecord",
     "generate_pairs",
     "save_shards",
+    "save_records",
+    "load_records",
+    "real_velocity_factory",
     "checkpoint_hash",
 ]
 
