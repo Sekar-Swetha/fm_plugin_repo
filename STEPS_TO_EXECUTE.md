@@ -79,12 +79,63 @@ This is the first real run of the flow-inversion patch. If it errors in the
 U-Net forward, send the full traceback (likely needs a tweak in
 `flow_matching_plugin/flow_inversion.py::make_velocity_fn`).
 
+## Step 6 — Contribution C: reflow (experimental — attempt, send what breaks)
+
+This part is newer and less battle-tested than Steps 1–5. Run it as far as it
+goes; whatever errors, send the traceback. All commands run from inside
+`motionEditor/MotionEditor` with `PYTHONPATH` set (as in Step 3).
+
+### 6a — generate real reflow pairs (uses the trained model in-memory)
+
+Add to `configs/case-1/eval-motion.yaml` under `validation_data:` (remove/comment
+the Step 5 flow-inversion keys first, or keep `loss_type: cfm_ot`):
+```yaml
+gen_reflow_pairs: c1                 # c1 = noise->data pairs
+reflow_pairs_out: runs/pairs-c1
+flow_inv_steps: 8
+flow_inv_method: heun
+```
+```bash
+accelerate launch inference.py --config configs/case-1/eval-motion.yaml
+ls runs/pairs-c1/                    # expect pairs-0000.pt + .json
+```
+
+### 6b — train the reflow model
+
+```bash
+accelerate launch ../../flow_matching_plugin/train_reflow.py \
+    --reflow-pairs-dir runs/pairs-c1 \
+    --init-checkpoint ../../motionEditor/MotionEditor/checkpoints/stable-diffusion-v1-5/unet \
+    --reflow-round 1 --num-steps 1000 --out runs/reflow
+ls runs/reflow/checkpoint-reflow-1/  # expect model.pt
+```
+> ⚠️ This is the most likely step to need a fix — initialising the reflow U-Net
+> from the MotionEditor checkpoint format is not fully wired. If it errors, send
+> the traceback and stop here; 6a's pairs are already the key C artefact.
+
+### 6c — few-step inference with the reflow model
+
+Add to `eval-motion.yaml` under `validation_data:`:
+```yaml
+reflow_unet_path: runs/reflow/checkpoint-reflow-1/model.pt
+use_flow_inversion: true
+flow_inv_steps: 1                    # 1-4 steps (the reflow payoff)
+flow_inv_method: euler
+loss_type: cfm_ot
+```
+(remove the `gen_reflow_pairs` / `reflow_pairs_out` keys so it edits instead of
+dumping)
+```bash
+accelerate launch inference.py --config configs/case-1/eval-motion.yaml
+```
+
 ## Send back
 
-1. `outputs/eval-case-1-motion/` videos from Step 4 and Step 5.
-2. Wall-clock time printed for each inference run.
-3. Any error tracebacks (especially Step 5).
-4. GPU model + peak memory if OOM.
+1. `outputs/eval-case-1-motion/` videos from Step 4 (baseline) and Step 5 (flow inversion).
+2. Step 6: whether 6a produced `runs/pairs-c1/`, and any 6b/6c tracebacks.
+3. Wall-clock time printed for each inference run.
+4. Any error tracebacks (especially Step 5 and Step 6b).
+5. GPU model + peak memory if OOM.
 
 ## Troubleshooting
 

@@ -249,6 +249,17 @@ def main(
     controlnet_adapter_weight = torch.load(controlnet_adapter_weight_path)
     unet.controlnet_adapter.load_state_dict(controlnet_adapter_weight)
 
+    # ====== Contribution C: optional reflow-trained U-Net override ======
+    # Load a reflow checkpoint (from train_reflow.py) over the base U-Net so the
+    # few-step (low flow_inv_steps) sampling uses the straightened flow.
+    _reflow_unet = getattr(validation_data, "reflow_unet_path", None)
+    if _reflow_unet:
+        sd = torch.load(_reflow_unet, map_location="cpu")
+        missing, unexpected = unet.load_state_dict(sd, strict=False)
+        print(f"[reflow] loaded U-Net override from {_reflow_unet} "
+              f"(missing={len(missing)}, unexpected={len(unexpected)})")
+    # ===================================================================
+
     for name, module in validation_pipeline.unet.named_modules():
         print(name)
     print("========================================")
@@ -276,6 +287,43 @@ def main(
 
         source_skeleton = batch["source_conditions"]["openposefull"].to(weight_dtype)
         target_skeleton = batch["target_conditions"]["openposefull"].to(weight_dtype)
+
+        # ====== Contribution C: dump reflow records (optional) ======
+        # When dump_reflow_records is set, save the VAE latent + skeleton conds as
+        # a ReflowRecord (input to generate_reflow_pairs) and skip the edit. Reuses
+        # the proven encode path above instead of a separate VAE script.
+        if getattr(validation_data, "dump_reflow_records", None):
+            from generate_reflow_pairs import ReflowRecord, save_records
+            rec = ReflowRecord(
+                z_src=latents.detach().cpu().float(),
+                cond_src=source_skeleton.detach().cpu().float(),
+                cond_tgt=target_skeleton.detach().cpu().float(),
+            )
+            save_records([rec], validation_data.dump_reflow_records)
+            print(f"[reflow] wrote 1 record to {validation_data.dump_reflow_records}")
+            continue
+
+        # Generate reflow pairs directly with the live (correctly-loaded) U-Net,
+        # avoiding a separate checkpoint reload. gen_reflow_pairs = "c1" or "c2".
+        if getattr(validation_data, "gen_reflow_pairs", None):
+            from generate_reflow_pairs import (
+                ReflowRecord, generate_pairs, save_shards, real_velocity_factory,
+            )
+            factory = real_velocity_factory(
+                unet, text_encoder=text_encoder,
+                prompt_ids=input_dataset.prompt_ids.to(latents.device).unsqueeze(0),
+            )
+            rec = ReflowRecord(z_src=latents, cond_src=source_skeleton, cond_tgt=target_skeleton)
+            pairs = generate_pairs(
+                [rec], factory, validation_data.gen_reflow_pairs,
+                num_steps=getattr(validation_data, "flow_inv_steps", 8),
+                method=getattr(validation_data, "flow_inv_method", "heun"),
+            )
+            save_shards(pairs, validation_data.reflow_pairs_out,
+                        {"mode": validation_data.gen_reflow_pairs, "loss_type": "cfm_ot"})
+            print(f"[reflow] wrote {len(pairs)} pair(s) to {validation_data.reflow_pairs_out}")
+            continue
+        # ============================================================
 
         source_masks = batch["source_masks"].to(weight_dtype)
         source_masks = source_masks.to(device=unet.device, dtype=unet.dtype)
