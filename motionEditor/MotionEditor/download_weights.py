@@ -1,14 +1,14 @@
 """Download SD1.5 + ControlNet-OpenPose weights for MotionEditor.
 
-Pure stdlib urllib (no hf CLI / xet — those hang on some lab networks).
-Streams each file, skips files already present, falls back .safetensors->.bin.
+Drives `curl` (proven to work on lab networks where hf CLI / xet / urllib hang).
+Skips files already present, falls back .safetensors->.bin.
 
 Run from motionEditor/MotionEditor:
     python3 download_weights.py
 """
 
+import subprocess
 import sys
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -22,23 +22,13 @@ def fetch(url: str, dest: Path) -> bool:
     if dest.exists() and dest.stat().st_size > 1024:
         print(f"  skip (exists) {dest.relative_to(CKPT)}  {dest.stat().st_size/1e6:.1f} MB")
         return True
-    print(f"  GET {url}")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
-        with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-            total = 0
-            while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-                total += len(chunk)
-                if total % (50 << 20) < (1 << 20):
-                    print(f"    ... {total/1e6:.0f} MB", flush=True)
-    except Exception as e:
-        print(f"  FAIL: {e}")
-        if dest.exists():
-            dest.unlink()
+    print(f"  curl {dest.relative_to(CKPT)}")
+    # -L follow redirects, --fail error on 404, -C - resume partials
+    r = subprocess.run(
+        ["curl", "-L", "--fail", "-C", "-", "-o", str(dest), url]
+    )
+    if r.returncode != 0 or not dest.exists() or dest.stat().st_size <= 1024:
+        print(f"  FAIL ({url})")
         return False
     print(f"  saved {dest.stat().st_size/1e6:.1f} MB  -> {dest.relative_to(CKPT)}")
     return True
