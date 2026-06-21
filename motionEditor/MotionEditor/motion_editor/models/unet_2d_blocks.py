@@ -28,14 +28,18 @@ else:
 if xformers is not None:
     def _sdpa_memory_efficient_attention(query, key, value, attn_bias=None,
                                          op=None, p=0.0, scale=None, **kwargs):
-        # xformers layout (B, M, H, K) -> SDPA layout (B, H, M, K)
-        q = query.transpose(1, 2)
-        k = key.transpose(1, 2)
-        v = value.transpose(1, 2)
         mask = attn_bias if torch.is_tensor(attn_bias) else None
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask,
-                                             dropout_p=p, scale=scale)
-        return out.transpose(1, 2).contiguous()
+        if query.dim() == 4:
+            # xformers layout (B, M, H, K) -> SDPA layout (B, H, M, K)
+            q = query.transpose(1, 2)
+            k = key.transpose(1, 2)
+            v = value.transpose(1, 2)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask,
+                                                 dropout_p=p, scale=scale)
+            return out.transpose(1, 2).contiguous()
+        # 3-D (B*H, M, K) == (batch, seq, head_dim): SDPA takes it as-is.
+        return F.scaled_dot_product_attention(query, key, value, attn_mask=mask,
+                                              dropout_p=p, scale=scale)
 
     xformers.ops.memory_efficient_attention = _sdpa_memory_efficient_attention
 # ----------------------------------------------------------------------------
