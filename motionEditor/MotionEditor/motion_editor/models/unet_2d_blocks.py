@@ -15,8 +15,30 @@ if is_xformers_available():
     import xformers
     import xformers.ops
 else:
-    print(1/0)
     xformers = None
+
+# --- xformers -> torch SDPA shim --------------------------------------------
+# MotionEditor hard-calls xformers.ops.memory_efficient_attention, but the
+# xformers CUDA extensions frequently mismatch the installed torch (especially
+# on new GPUs like Blackwell), so the call fails at runtime. torch's native
+# scaled_dot_product_attention is numerically equivalent, needs no xformers
+# extension, and runs on any CUDA arch torch supports. Patch the symbol once
+# here (this module is imported by every entry script via the U-Net) so all
+# call sites transparently use SDPA.
+if xformers is not None:
+    def _sdpa_memory_efficient_attention(query, key, value, attn_bias=None,
+                                         op=None, p=0.0, scale=None, **kwargs):
+        # xformers layout (B, M, H, K) -> SDPA layout (B, H, M, K)
+        q = query.transpose(1, 2)
+        k = key.transpose(1, 2)
+        v = value.transpose(1, 2)
+        mask = attn_bias if torch.is_tensor(attn_bias) else None
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask,
+                                             dropout_p=p, scale=scale)
+        return out.transpose(1, 2).contiguous()
+
+    xformers.ops.memory_efficient_attention = _sdpa_memory_efficient_attention
+# ----------------------------------------------------------------------------
 
 class AdapterCrossAttention(nn.Module):
     def __init__(
