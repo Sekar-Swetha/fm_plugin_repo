@@ -7,7 +7,11 @@ import torch
 import PIL
 from diffusers.utils import is_accelerate_available
 from packaging import version
-from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
+try:
+    from transformers import CLIPFeatureExtractor
+except ImportError:  # renamed to CLIPImageProcessor in newer transformers
+    from transformers import CLIPImageProcessor as CLIPFeatureExtractor
+from transformers import CLIPTextModel, CLIPTokenizer
 
 from diffusers.configuration_utils import FrozenDict
 from diffusers.models import AutoencoderKL  # UNet2DConditionModel
