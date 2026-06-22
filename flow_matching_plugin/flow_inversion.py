@@ -162,6 +162,8 @@ def make_velocity_fn(
 
     encoder_hidden_states = None
     if text_encoder is not None and prompt_ids is not None:
+        if prompt_ids.dim() == 1:           # CLIP needs (batch, seq_len)
+            prompt_ids = prompt_ids.unsqueeze(0)
         enc = text_encoder(prompt_ids)
         encoder_hidden_states = _unwrap(enc, "last_hidden_state")
 
