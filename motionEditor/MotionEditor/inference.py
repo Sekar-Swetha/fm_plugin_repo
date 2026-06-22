@@ -347,20 +347,27 @@ def main(
             # Flow inversion requires a velocity-prediction (CFM-OT) checkpoint, not
             # an epsilon-prediction one. Fail early with a clear message otherwise.
             assert_cfm_ot_checkpoint(getattr(validation_data, "loss_type", None))
-            inverter = MotionEditorFlowInversion(
-                unet=unet,
-                controlnet=None,                 # MotionEditor fuses control into the U-Net
-                text_encoder=text_encoder,
-                source_skeleton=source_skeleton,
-                num_steps=getattr(validation_data, "flow_inv_steps", 8),
-                method=getattr(validation_data, "flow_inv_method", "heun"),
-                # Invert via the plain-SD path (like the baseline ddim_inversion),
-                # so the velocity field matches the U-Net's normal_infer forward.
-                extra_unet_kwargs={"normal_infer": True},
-            )
-            ddim_inv_latent = inverter.invert(
-                latents, input_dataset.prompt_ids.to(latents.device)
-            ).to(weight_dtype)
+            if getattr(validation_data, "flow_skip_inversion", False):
+                # DIAGNOSTIC: skip inversion, start flow sampling from random noise.
+                # If the result is sharp, sampling/model are fine and the inversion
+                # is what blurs the edit.
+                ddim_inv_latent = torch.randn_like(latents).to(weight_dtype)
+                print("[flow] DIAGNOSTIC: skipping inversion, sampling from noise")
+            else:
+                inverter = MotionEditorFlowInversion(
+                    unet=unet,
+                    controlnet=None,                 # MotionEditor fuses control into the U-Net
+                    text_encoder=text_encoder,
+                    source_skeleton=source_skeleton,
+                    num_steps=getattr(validation_data, "flow_inv_steps", 8),
+                    method=getattr(validation_data, "flow_inv_method", "heun"),
+                    # Invert via the plain-SD path (like the baseline ddim_inversion),
+                    # so the velocity field matches the U-Net's normal_infer forward.
+                    extra_unet_kwargs={"normal_infer": True},
+                )
+                ddim_inv_latent = inverter.invert(
+                    latents, input_dataset.prompt_ids.to(latents.device)
+                ).to(weight_dtype)
             uncond_embeddings = None
         elif validation_data.use_null_inv:
         # ===========================================================================
