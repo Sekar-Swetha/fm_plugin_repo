@@ -146,6 +146,7 @@ def make_velocity_fn(
     text_encoder=None,
     prompt_ids=None,
     prepare_image_fn=None,
+    extra_unet_kwargs=None,
 ) -> VelocityFn:
     """Build the velocity closure `flow_invert` / `flow_sample` expect.
 
@@ -171,6 +172,8 @@ def make_velocity_fn(
     if prepare_image_fn is not None:
         controlnet_cond = prepare_image_fn(cond)
 
+    extra = dict(extra_unet_kwargs or {})
+
     def velocity_fn(x_t: torch.Tensor, t_idx: torch.Tensor) -> torch.Tensor:
         down_res = mid_res = None
         if controlnet is not None:
@@ -186,9 +189,11 @@ def make_velocity_fn(
         if down_res is not None:
             kwargs["down_block_additional_residuals"] = down_res
             kwargs["mid_block_additional_residual"] = mid_res
-        elif controlnet is None and cond is not None:
-            # No ControlNet (e.g. the demo stub): pass cond straight through.
+        elif controlnet is None and cond is not None and not extra:
+            # No ControlNet and no explicit unet kwargs (e.g. the demo stub):
+            # pass cond straight through. Real U-Nets get `extra_unet_kwargs`.
             kwargs["cond"] = controlnet_cond
+        kwargs.update(extra)
 
         out = unet(x_t, t_idx, **kwargs)
         return _unwrap(out, "sample")
@@ -231,6 +236,7 @@ class MotionEditorFlowInversion:
         method: str = "heun",
         prepare_image_fn=None,
         config: Optional[FlowMatchingConfig] = None,
+        extra_unet_kwargs=None,
     ):
         if num_steps < 1:
             raise ValueError("num_steps must be >= 1")
@@ -244,6 +250,7 @@ class MotionEditorFlowInversion:
         self.method = method.lower()
         self.prepare_image_fn = prepare_image_fn
         self.config = config or FlowMatchingConfig()
+        self.extra_unet_kwargs = extra_unet_kwargs
 
     def velocity_fn(self, prompt_ids=None, skeleton=None) -> VelocityFn:
         return make_velocity_fn(
@@ -253,6 +260,7 @@ class MotionEditorFlowInversion:
             text_encoder=self.text_encoder,
             prompt_ids=prompt_ids,
             prepare_image_fn=self.prepare_image_fn,
+            extra_unet_kwargs=self.extra_unet_kwargs,
         )
 
     @torch.no_grad()

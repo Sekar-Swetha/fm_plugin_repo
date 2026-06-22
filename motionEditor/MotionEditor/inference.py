@@ -353,6 +353,9 @@ def main(
                 source_skeleton=source_skeleton,
                 num_steps=getattr(validation_data, "flow_inv_steps", 8),
                 method=getattr(validation_data, "flow_inv_method", "heun"),
+                # Invert via the plain-SD path (like the baseline ddim_inversion),
+                # so the velocity field matches the U-Net's normal_infer forward.
+                extra_unet_kwargs={"normal_infer": True},
             )
             ddim_inv_latent = inverter.invert(
                 latents, input_dataset.prompt_ids.to(latents.device)
