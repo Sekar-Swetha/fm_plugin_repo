@@ -533,6 +533,10 @@ class MotionEditorPipeline(DiffusionPipeline):
         target_masks=None,
         rectangle_source_masks=None,
         background_latents=None,
+        flow_sampling: bool = False,
+        flow_steps: int = 8,
+        flow_method: str = "heun",
+        flow_num_train_timesteps: int = 1000,
         **kwargs,
     ):
         # Default height and width to unet
@@ -600,7 +604,55 @@ class MotionEditorPipeline(DiffusionPipeline):
 
         # Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
+
+        def _flow_velocity(cur_latents, t_model):
+            """One velocity evaluation through ControlNet + two-branch U-Net (with
+            CFG). Used by the flow-ODE (CFM-OT) sampler; mirrors the DDIM body but
+            returns velocity instead of an epsilon prediction."""
+            lmi = torch.cat([cur_latents] * 2) if do_classifier_free_guidance else cur_latents
+            cn_in = torch.cat([torch.unsqueeze(lmi[1], dim=0), torch.unsqueeze(lmi[3], dim=0)], dim=0)
+            cn_in = rearrange(cn_in, "b c f h w -> (b f) c h w").to(dtype=self.controlnet.dtype)
+            cn_emb = torch.cat([torch.unsqueeze(text_embeddings[1], dim=0), torch.unsqueeze(text_embeddings[3], dim=0)], dim=0)
+            down, mid = self.controlnet(
+                cn_in, t_model,
+                encoder_hidden_states=cn_emb.repeat(video_length, 1, 1),
+                controlnet_cond=images, conditioning_scale=1.0, return_dict=False,
+            )
+            down = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in down]
+            mid = rearrange(mid, "(b f) c h w -> b c f h w", f=video_length)
+            src_mid = torch.zeros_like(mid)
+            mid = torch.cat([torch.unsqueeze(src_mid[0], dim=0), torch.unsqueeze(mid[0], dim=0),
+                             torch.unsqueeze(src_mid[1], dim=0), torch.unsqueeze(mid[1], dim=0)], dim=0)
+            v = self.unet(
+                lmi, t_model, encoder_hidden_states=text_embeddings,
+                down_block_additional_residuals=down, mid_block_additional_residual=mid,
+                source_masks=None, target_masks=None, rectangle_source_masks=None, skeleton=None,
+            ).sample.to(dtype=latents_dtype)
+            if do_classifier_free_guidance:
+                v_u, v_t = v.chunk(2)
+                v = v_u + guidance_scale * (v_t - v_u)
+            return v
+
+        if flow_sampling:
+            # Flow-ODE (CFM-OT) sampling: integrate the velocity field t: 0 -> 1 from
+            # the flow-inverted latent. The two-branch attention injection still runs
+            # inside the U-Net forward; only the update rule changes (Euler/Heun).
+            dt = 1.0 / flow_steps
+            with self.progress_bar(total=flow_steps) as progress_bar:
+                for k in range(flow_steps):
+                    t_model = torch.tensor(int(round((k / flow_steps) * (flow_num_train_timesteps - 1))), device=device)
+                    v1 = _flow_velocity(latents, t_model)
+                    if flow_method == "heun" and k < flow_steps - 1:
+                        t_next = torch.tensor(int(round(((k + 1) / flow_steps) * (flow_num_train_timesteps - 1))), device=device)
+                        v2 = _flow_velocity(latents + dt * v1, t_next)
+                        latents = latents + dt * 0.5 * (v1 + v2)
+                    else:
+                        latents = latents + dt * v1
+                    progress_bar.update()
+                    if callback is not None and k % callback_steps == 0:
+                        callback(k, t_model, latents)
+        else:
+          with self.progress_bar(total=num_inference_steps) as progress_bar:
             if uncond_embeddings is not None:
                 start_time = 50
                 assert (timesteps[-start_time:] == timesteps).all()

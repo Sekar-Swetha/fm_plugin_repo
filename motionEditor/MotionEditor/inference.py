@@ -408,6 +408,12 @@ def main(
                                          target_masks=None,
                                          rectangle_source_masks=None,
                                          background_latents=None,
+                                         # Contribution A/B: flow-ODE sampling for the
+                                         # velocity (CFM-OT) checkpoint, on when inverting.
+                                         flow_sampling=getattr(validation_data, "use_flow_inversion", False),
+                                         flow_steps=getattr(validation_data, "flow_inv_steps", 8),
+                                         flow_method=getattr(validation_data, "flow_inv_method", "heun"),
+                                         flow_num_train_timesteps=getattr(validation_data, "flow_num_train_timesteps", 1000),
                                          **validation_data).images
 
             assert sample.shape[0] == 2
