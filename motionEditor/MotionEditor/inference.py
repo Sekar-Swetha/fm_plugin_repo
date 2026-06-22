@@ -312,6 +312,7 @@ def main(
             factory = real_velocity_factory(
                 unet, text_encoder=text_encoder,
                 prompt_ids=input_dataset.prompt_ids.to(latents.device).unsqueeze(0),
+                extra_unet_kwargs={"normal_infer": True},
             )
             rec = ReflowRecord(z_src=latents, cond_src=source_skeleton, cond_tgt=target_skeleton)
             pairs = generate_pairs(

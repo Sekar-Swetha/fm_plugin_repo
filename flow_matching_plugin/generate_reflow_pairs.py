@@ -149,6 +149,7 @@ def real_velocity_factory(
     text_encoder=None,
     prompt_ids=None,
     prepare_image_fn=None,
+    extra_unet_kwargs=None,
 ) -> VelocityFnFactory:
     """Build the `cond -> velocity_fn` factory `generate_pairs` expects from a
     real (or stub) MotionEditor U-Net, reusing `flow_inversion.make_velocity_fn`
@@ -166,6 +167,7 @@ def real_velocity_factory(
             text_encoder=text_encoder,
             prompt_ids=prompt_ids,
             prepare_image_fn=prepare_image_fn,
+            extra_unet_kwargs=extra_unet_kwargs,
         )
 
     return factory
