@@ -709,6 +709,10 @@ class MotionEditorPipeline(DiffusionPipeline):
                     if callback is not None and i % callback_steps == 0:
                         callback(i, t, latents)
 
+        # Stash the final latents (pre-decode) so callers can capture the edited
+        # latent for distillation pair generation (Contribution C2).
+        self._last_latents = latents.detach()
+
         # Post-processing
         images = self.decode_latents(latents)
 

@@ -481,6 +481,23 @@ def main(
                                          flow_num_train_timesteps=getattr(validation_data, "flow_num_train_timesteps", 1000),
                                          **validation_data).images
 
+            # ====== Contribution C2: dump distillation pair (source -> sharp edit) ======
+            # Run this with the EPSILON checkpoint + DDIM (use_flow_inversion=False) to
+            # capture a SHARP edited latent as the teacher target. Saves
+            # (z_src, z_edit_sharp, target_skeleton) for distillation training.
+            if getattr(validation_data, "distill_dump_to", None):
+                from generate_reflow_pairs import save_shards
+                _z_edit = validation_pipeline._last_latents[1:2].detach().cpu().float()  # edit branch
+                _z_src = latents.detach().cpu().float()                                  # source latent
+                _cond = target_skeleton.detach().cpu().float()
+                save_shards(
+                    [(_z_src[0], _z_edit[0], _cond[0])],
+                    validation_data.distill_dump_to,
+                    {"mode": "c2_distill", "loss_type": "cfm_ot"},
+                )
+                print(f"[distill] saved (z_src, z_edit_sharp, cond) -> {validation_data.distill_dump_to}")
+            # ===========================================================================
+
             assert sample.shape[0] == 2
             sample_inv, sample_gen = sample.chunk(2)
             # add input for vis
