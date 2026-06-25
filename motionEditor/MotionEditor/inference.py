@@ -451,12 +451,18 @@ def main(
             train_index = get_word_inds(text=prompts[0], word_place="girl", tokenizer=tokenizer)
             validate_index = get_word_inds(text=prompts[1], word_place="girl", tokenizer=tokenizer)
 
-            STEP = 4
+            STEP = getattr(validation_data, "attn_inject_step", 4)
             LAYPER = 10
-            temporal_editor = TemporalSelfAttentionControl(start_step=STEP, start_layer=LAYPER)
-            regiter_temporal_attention_editor_diffusers(validation_pipeline, temporal_editor)
-            fully_editor = FullySelfAttentionControlMask(start_step=STEP, start_layer=LAYPER, ref_token_idx=train_index, cur_token_idx=validate_index, source_masks=source_masks, target_masks=None, rectangle_source_masks=None, mask_save_dir=None)
-            regiter_fully_attention_editor_diffusers(validation_pipeline, fully_editor)
+            if getattr(validation_data, "flow_no_injection", False):
+                # DIAGNOSTIC: skip the two-branch / temporal attention injection.
+                # If the person renders cleanly (single pose) without it, the
+                # injection is the ghosting source under flow sampling.
+                print("[flow] DIAGNOSTIC: attention injection DISABLED")
+            else:
+                temporal_editor = TemporalSelfAttentionControl(start_step=STEP, start_layer=LAYPER)
+                regiter_temporal_attention_editor_diffusers(validation_pipeline, temporal_editor)
+                fully_editor = FullySelfAttentionControlMask(start_step=STEP, start_layer=LAYPER, ref_token_idx=train_index, cur_token_idx=validate_index, source_masks=source_masks, target_masks=None, rectangle_source_masks=None, mask_save_dir=None)
+                regiter_fully_attention_editor_diffusers(validation_pipeline, fully_editor)
 
             sample = validation_pipeline(prompts,
                                          generator=generator,

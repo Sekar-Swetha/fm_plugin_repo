@@ -58,6 +58,14 @@ _For the supervisor meeting. Lead with the wins, be precise about the open probl
 > two-branch attention and inversion — is tightly coupled to the diffusion/DDIM trajectory. It doesn't
 > transfer cleanly to the flow ODE. That's a methodological gap, not a bug."
 
+**Update (experiment #9): I fixed cause #3.** I implemented **conditioned flow inversion** (invert
+using the same source-skeleton + ControlNet conditioning the model was trained on, instead of the
+unconditioned path). Result: the **background/scene is now sharp** — a clear, visible improvement.
+The **person remains ghosted**, which **isolates cause #2** (the two-branch / temporal attention
+injection) as the dominant remaining factor. So I've empirically *separated and partially fixed* the
+problem — strong evidence the diagnosis is correct and the path forward (flow-aware attention) is the
+right one.
+
 ---
 
 ## 4. Experiment log — what I tried (shows rigor)
@@ -72,6 +80,7 @@ _For the supervisor meeting. Lead with the wins, be precise about the open probl
 | 6 | Skip inversion, sample from noise | isolate inversion vs sampling | **shattered** (two-branch needs real source) |
 | 7 | cosine-LR retrain, 800 steps | constant-LR overfit | still soft (but see #8) |
 | 8 | **fixed a latent LR-scheduler bug** (one-stage load restored a decayed scheduler → LR≈0), reran proper cosine | training budget | **still soft → training budget DEFINITIVELY ruled out** |
+| 9 | **conditioned flow inversion** (invert with source skeleton + ControlNet, matching training, instead of unconditioned normal_infer) | cause #3 | **background now SHARP** (big improvement); person ghosted → **cause #3 fixed, cause #2 isolated** |
 
 **Takeaway to present:** I even found and fixed a hidden bug that had been crippling every
 longer-training run (the LR was being forced to ~0). With *proper* training the output is **still
