@@ -80,7 +80,15 @@ right one.
 | 6 | Skip inversion, sample from noise | isolate inversion vs sampling | **shattered** (two-branch needs real source) |
 | 7 | cosine-LR retrain, 800 steps | constant-LR overfit | still soft (but see #8) |
 | 8 | **fixed a latent LR-scheduler bug** (one-stage load restored a decayed scheduler → LR≈0), reran proper cosine | training budget | **still soft → training budget DEFINITIVELY ruled out** |
-| 9 | **conditioned flow inversion** (invert with source skeleton + ControlNet, matching training, instead of unconditioned normal_infer) | cause #3 | **background now SHARP** (big improvement); person ghosted → **cause #3 fixed, cause #2 isolated** |
+| 9 | **conditioned flow inversion** (invert with source skeleton + ControlNet, matching training, instead of unconditioned normal_infer) | cause #3 | **background now SHARP** (big improvement); person still ghosted |
+| 10 | Euler (vs Heun) for the editor step-count | injection step misalignment | person still ghosted (not the cause) |
+| 11 | **disable the two-branch/temporal injection** | cause #2 | person **still ghosted** → **cause #2 RULED OUT as the ghosting source** |
+
+**Final localization:** the **static background renders sharp; only the *moving* person ghosts.**
+After fixing inversion (#3) and ruling out injection (#2), the remaining issue is the **CFM-OT
+velocity field's precision on *dynamic* content + temporal coherence under flow sampling** — i.e. the
+model can place a static scene cleanly but smears the moving subject across frames. That is the core
+methodological frontier (temporally-consistent flow for video), not a tunable knob.
 
 **Takeaway to present:** I even found and fixed a hidden bug that had been crippling every
 longer-training run (the LR was being forced to ~0). With *proper* training the output is **still
@@ -112,6 +120,19 @@ flow ODE trajectory. Every training/inference lever is now exhausted; the remain
   MSc work.
 
 ---
+
+## 5b. Where the investigation landed (the headline finding)
+
+Through systematic toggling I **separated the problem into "static scene" vs "moving subject":**
+- **Conditioned inversion fixes the scene** → sharp background. (Contribution: a flow inversion that
+  uses the trained conditioning, not the naive unconditioned path.)
+- **The moving person still ghosts**, regardless of attention injection (ruled out) or training budget
+  (ruled out) or sampler/CFG/steps (ruled out).
+
+**Conclusion:** flow matching can reconstruct/invert the *scene* well, but rendering a *temporally
+coherent moving subject* under flow sampling — with editing machinery built for diffusion — is the
+open problem. This is a clean, defensible result and a precise future-work target
+(**temporally-consistent flow for video editing**).
 
 ## 6. My recommendation (propose, then defer to advisor)
 
