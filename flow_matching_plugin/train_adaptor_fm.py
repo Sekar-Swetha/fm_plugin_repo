@@ -259,7 +259,21 @@ def main(
     progress_bar.set_description("Steps")
 
     if one_stage_checkpoint is not None:
-        accelerator.load_state(one_stage_checkpoint)
+        # Load ONLY the U-Net weights from the one-stage (background) checkpoint —
+        # NOT the optimizer/scheduler. accelerator.load_state restores the saved,
+        # already-decayed LR scheduler, which overwrites the fresh (e.g. cosine)
+        # schedule and trains at LR ~ 0. Loading just the weights lets the
+        # configured schedule actually run.
+        _bin = os.path.join(one_stage_checkpoint, "pytorch_model.bin")
+        if os.path.exists(_bin):
+            _sd = torch.load(_bin, map_location="cpu")
+            missing, unexpected = accelerator.unwrap_model(unet).load_state_dict(_sd, strict=False)
+            accelerator.print(
+                f"one_stage: loaded U-Net weights only "
+                f"(missing={len(missing)}, unexpected={len(unexpected)})"
+            )
+        else:
+            accelerator.load_state(one_stage_checkpoint)
 
     initial_params = {}
     for name, param in unet.named_parameters():
