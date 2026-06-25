@@ -70,10 +70,15 @@ _For the supervisor meeting. Lead with the wins, be precise about the open probl
 | 4 | Lower CFG (7.5→3) | guidance over-amplifies | no change |
 | 5 | More/fewer ODE steps (8, 50) | integration error | no change |
 | 6 | Skip inversion, sample from noise | isolate inversion vs sampling | **shattered** (two-branch needs real source) |
-| 7 | (queued) cosine-LR retrain | constant-LR overfit | TBD — the one untried legitimate lever |
+| 7 | cosine-LR retrain, 800 steps | constant-LR overfit | still soft (but see #8) |
+| 8 | **fixed a latent LR-scheduler bug** (one-stage load restored a decayed scheduler → LR≈0), reran proper cosine | training budget | **still soft → training budget DEFINITIVELY ruled out** |
 
-**Takeaway to present:** every cheap/medium lever is exhausted; the softness is the **ceiling of this
-setup**, traced to the three causes above.
+**Takeaway to present:** I even found and fixed a hidden bug that had been crippling every
+longer-training run (the LR was being forced to ~0). With *proper* training the output is **still
+soft** — so the softness is **not** a training issue. It is the **architectural mismatch** (causes #2
+and #3): the DDIM-tuned two-branch attention and the unconditioned inversion don't transfer to the
+flow ODE trajectory. Every training/inference lever is now exhausted; the remaining fixes are
+**architectural** (conditioned inversion, flow-aware attention, or distillation).
 
 ---
 

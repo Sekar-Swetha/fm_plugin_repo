@@ -353,6 +353,57 @@ def main(
                 # is what blurs the edit.
                 ddim_inv_latent = torch.randn_like(latents).to(weight_dtype)
                 print("[flow] DIAGNOSTIC: skipping inversion, sampling from noise")
+            elif getattr(validation_data, "flow_cond_inversion", False):
+                # CONDITIONED flow inversion: integrate the velocity field BACKWARD
+                # (t:1->0) using the SAME conditioning the model was trained with
+                # (source skeleton + ControlNet), instead of the unconditioned
+                # normal_infer path the CFM-OT model never learned. Mirrors the
+                # training forward exactly, so the recovered latent is consistent
+                # with conditioned sampling.
+                print("[flow] CONDITIONED inversion (source skeleton + ControlNet)")
+                _N = getattr(validation_data, "flow_inv_steps", 50)
+                _method = getattr(validation_data, "flow_inv_method", "heun")
+                _ntt = 1000
+                _eps = 1e-5
+                with torch.no_grad():
+                    _ehs = text_encoder(input_dataset.prompt_ids.to(latents.device).unsqueeze(0))[0]
+                    _imgs = validation_pipeline.prepare_image(
+                        image=source_skeleton, width=input_data.width, height=input_data.height,
+                        batch_size=1, num_images_per_prompt=1, device=latents.device,
+                        dtype=controlnet.dtype, do_classifier_free_guidance=False,
+                    )
+                    _imgs = rearrange(_imgs, "b f c h w -> (b f) c h w").to(
+                        device=controlnet.device, dtype=controlnet.dtype)
+
+                    def _cond_velocity(x, t_idx_int):
+                        ts = torch.full((x.shape[0],), t_idx_int, device=x.device, dtype=torch.long)
+                        cn_in = rearrange(x, "b c f h w -> (b f) c h w").to(dtype=controlnet.dtype)
+                        d, m = controlnet(
+                            cn_in, ts,
+                            encoder_hidden_states=_ehs.repeat(video_length, 1, 1),
+                            controlnet_cond=_imgs, conditioning_scale=1.0, return_dict=False,
+                        )
+                        d = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in d]
+                        m = rearrange(m, "(b f) c h w -> b c f h w", f=video_length)
+                        return unet(
+                            x, ts, encoder_hidden_states=_ehs,
+                            down_block_additional_residuals=d,
+                            mid_block_additional_residual=m,
+                        ).sample.to(x.dtype)
+
+                    def _tidx(tc):
+                        return int(round(min(max(tc, _eps), 1 - _eps) * (_ntt - 1)))
+
+                    x = latents
+                    dt = 1.0 / _N
+                    for k in range(_N):
+                        v1 = _cond_velocity(x, _tidx(1.0 - k / _N))
+                        if _method == "heun" and k < _N - 1:
+                            v2 = _cond_velocity(x - dt * v1, _tidx(1.0 - (k + 1) / _N))
+                            x = x - dt * 0.5 * (v1 + v2)
+                        else:
+                            x = x - dt * v1
+                    ddim_inv_latent = x.to(weight_dtype)
             else:
                 inverter = MotionEditorFlowInversion(
                     unet=unet,
