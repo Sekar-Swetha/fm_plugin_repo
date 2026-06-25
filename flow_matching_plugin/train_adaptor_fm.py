@@ -96,6 +96,7 @@ def main(
     loss_type: str = "cfm_ot",
     flow_sigma_min: float = 0.0,
     flow_t_eps: float = 1e-5,
+    distill_pairs_dir: Optional[str] = None,
 ):
     *_, config = inspect.getargvalues(inspect.currentframe())
 
@@ -275,6 +276,22 @@ def main(
         else:
             accelerator.load_state(one_stage_checkpoint)
 
+    # Contribution C2 (distillation): load the (z_src, z_edit_sharp, cond_tgt) pair.
+    # Training then learns the straight flow from the source latent to the SHARP
+    # epsilon-edited latent, conditioned on the target pose.
+    distill_pair = None
+    if distill_pairs_dir is not None:
+        from train_reflow import ReflowPairDataset
+        _dds = ReflowPairDataset(distill_pairs_dir)
+        _z0, _z1, _cond = _dds[0]
+        distill_pair = (
+            _z0.unsqueeze(0).to(accelerator.device, dtype=weight_dtype),
+            _z1.unsqueeze(0).to(accelerator.device, dtype=weight_dtype),
+            _cond.unsqueeze(0).to(accelerator.device, dtype=weight_dtype),
+        )
+        accelerator.print(f"[distill] loaded pair z0={tuple(distill_pair[0].shape)} "
+                          f"z1={tuple(distill_pair[1].shape)} cond={tuple(distill_pair[2].shape)}")
+
     initial_params = {}
     for name, param in unet.named_parameters():
         initial_params[name] = param.clone().detach()
@@ -298,7 +315,19 @@ def main(
                 source_skeleton = batch["source_conditions"]["openposefull"].to(weight_dtype)
                 encoder_hidden_states = text_encoder(batch["prompt_ids"])[0]
 
-                if loss_type == "cfm_ot":
+                if loss_type == "cfm_ot" and distill_pair is not None:
+                    # C2 distillation coupling: x_0 = source latent, x_1 = sharp edit,
+                    # condition on the TARGET pose (cond from the pair).
+                    from flow_matching_loss import (
+                        compute_x_t as _cxt, compute_target_velocity as _ctv, sample_t as _st,
+                    )
+                    z0, z1, cond_tgt = distill_pair
+                    t = _st(z1.shape[0], z1.device, eps=fm_cfg.t_eps)
+                    noisy_latents = _cxt(z0, z1, t, sigma_min=fm_cfg.sigma_min)
+                    target = _ctv(z0, z1, sigma_min=fm_cfg.sigma_min)
+                    timesteps = (t * (fm_cfg.num_train_timesteps - 1)).round().long()
+                    source_skeleton = cond_tgt.to(weight_dtype)
+                elif loss_type == "cfm_ot":
                     x_1 = latents
                     x_t, t_cont, timesteps, target = build_fm_training_batch(x_1, fm_cfg)
                     noisy_latents = x_t

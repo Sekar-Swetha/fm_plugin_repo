@@ -347,7 +347,13 @@ def main(
             # Flow inversion requires a velocity-prediction (CFM-OT) checkpoint, not
             # an epsilon-prediction one. Fail early with a clear message otherwise.
             assert_cfm_ot_checkpoint(getattr(validation_data, "loss_type", None))
-            if getattr(validation_data, "flow_skip_inversion", False):
+            if getattr(validation_data, "flow_from_source", False):
+                # Contribution C2 (distilled direct editor): start the flow ODE from
+                # the SOURCE latent. The distilled model maps source -> sharp edit
+                # directly, so no inversion is needed.
+                ddim_inv_latent = latents.to(weight_dtype)
+                print("[flow] C2: sampling from source latent (distilled direct editor)")
+            elif getattr(validation_data, "flow_skip_inversion", False):
                 # DIAGNOSTIC: skip inversion, start flow sampling from random noise.
                 # If the result is sharp, sampling/model are fine and the inversion
                 # is what blurs the edit.
