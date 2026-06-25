@@ -1,7 +1,7 @@
 pretrained_model_path: checkpoints/stable-diffusion-v1-5
 output_dir: "outputs/eval-case-1-motion"
-resume_from_checkpoint: "outputs/train-case-1-motion/checkpoint-300"
-adapter_weight_path: "outputs/train-case-1-motion/controlnet_adapter_checkpoint-300.pth"
+resume_from_checkpoint: "outputs/train-case-1-motion/checkpoint-1500-fm"
+adapter_weight_path: "outputs/train-case-1-motion/controlnet_adapter_checkpoint-1500-fm.pth"
 
 input_data:
   video_dir: "data/case-1"
@@ -29,12 +29,20 @@ validation_data:
   num_inference_steps: 50
   guidance_scale: 7.5
   num_inv_steps: 50
-  use_null_inv: True
+  use_null_inv: False
   null_inner_steps: 1
   null_base_lr: 1e-2
   null_uncond_ratio: -0.5
   null_normal_infer: True
   controlnet_conditioning_scale: 1.0
+
+  # ---- Contribution C2: distilled direct flow editor ----
+  use_flow_inversion: True
+  loss_type: cfm_ot
+  flow_from_source: True        # start ODE at source latent (no inversion)
+  flow_no_injection: True       # match training (distill had no two-branch attn)
+  flow_inv_steps: 1             # 1 step = reproduce teacher. sweep 1,2,4
+  flow_inv_method: euler        # euler for 1 step (heun needs >=2)
 
 input_batch_size: 1
 seed: 33
