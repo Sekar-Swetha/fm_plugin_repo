@@ -60,6 +60,38 @@ where OpenPose did not. Includes `source_video.mp4`,
 containing the byte-compatible OpenPose-style PNGs produced by the
 plugin in (1).
 
+## Running the current experiment (GPU lab box)
+
+Distilled direct flow editor (Contribution C2): the source latent is mapped
+directly to the edited latent by the flow model, sampled in a single ODE step.
+The evaluation config `motionEditor/MotionEditor/configs/case-1/eval-motion.yaml`
+is committed with the required settings.
+
+```bash
+conda activate me310
+cd ~/fm_plugin_repo
+git stash; git pull; git stash drop
+cd motionEditor/MotionEditor
+export PYTHONPATH=$(pwd):$(pwd)/../../flow_matching_plugin
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+python3 inference.py --config configs/case-1/eval-motion.yaml
+
+# collect all output gifs to inspect
+mkdir -p ~/c2_run && cp outputs/eval-case-1-motion/*.gif ~/c2_run/
+```
+
+The edited result is the right-hand panel of the side-by-side `sample-all*.gif`
+in `~/c2_run/`. Please send back the contents of `~/c2_run/`.
+
+Optional CPU-only sanity check of the flow-matching core (no GPU needed):
+
+```bash
+cd ~/fm_plugin_repo/flow_matching_plugin
+python -m pytest tests/test_flow_matching.py -q
+python verify_loss.py
+```
+
 ## Reproducing the proofs
 
 Each plugin is self-contained. From the repo root:
