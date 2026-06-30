@@ -609,28 +609,53 @@ class MotionEditorPipeline(DiffusionPipeline):
             """One velocity evaluation through ControlNet + two-branch U-Net (with
             CFG). Used by the flow-ODE (CFM-OT) sampler; mirrors the DDIM body but
             returns velocity instead of an epsilon prediction."""
-            lmi = torch.cat([cur_latents] * 2) if do_classifier_free_guidance else cur_latents
-            cn_in = torch.cat([torch.unsqueeze(lmi[1], dim=0), torch.unsqueeze(lmi[3], dim=0)], dim=0)
-            cn_in = rearrange(cn_in, "b c f h w -> (b f) c h w").to(dtype=self.controlnet.dtype)
-            cn_emb = torch.cat([torch.unsqueeze(text_embeddings[1], dim=0), torch.unsqueeze(text_embeddings[3], dim=0)], dim=0)
+            if do_classifier_free_guidance:
+                # A/B path: CFG on -> 4-branch latent layout
+                # [uncond_src, uncond_tgt, cond_src, cond_tgt]. ControlNet runs on the
+                # target branch under both uncond/cond ([1] and [3]); the U-Net gets a
+                # 4-entry mid which triggers the two-branch attention injection.
+                lmi = torch.cat([cur_latents] * 2)
+                cn_in = torch.cat([torch.unsqueeze(lmi[1], dim=0), torch.unsqueeze(lmi[3], dim=0)], dim=0)
+                cn_in = rearrange(cn_in, "b c f h w -> (b f) c h w").to(dtype=self.controlnet.dtype)
+                cn_emb = torch.cat([torch.unsqueeze(text_embeddings[1], dim=0), torch.unsqueeze(text_embeddings[3], dim=0)], dim=0)
+                down, mid = self.controlnet(
+                    cn_in, t_model,
+                    encoder_hidden_states=cn_emb.repeat(video_length, 1, 1),
+                    controlnet_cond=images, conditioning_scale=1.0, return_dict=False,
+                )
+                down = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in down]
+                mid = rearrange(mid, "(b f) c h w -> b c f h w", f=video_length)
+                src_mid = torch.zeros_like(mid)
+                mid = torch.cat([torch.unsqueeze(src_mid[0], dim=0), torch.unsqueeze(mid[0], dim=0),
+                                 torch.unsqueeze(src_mid[1], dim=0), torch.unsqueeze(mid[1], dim=0)], dim=0)
+                v = self.unet(
+                    lmi, t_model, encoder_hidden_states=text_embeddings,
+                    down_block_additional_residuals=down, mid_block_additional_residual=mid,
+                    source_masks=None, target_masks=None, rectangle_source_masks=None, skeleton=None,
+                ).sample.to(dtype=latents_dtype)
+                v_u, v_t = v.chunk(2)
+                v = v_u + guidance_scale * (v_t - v_u)
+                return v
+            # C2 path: no CFG -> 2-branch latent layout [src-prompt, tgt-prompt], both
+            # conditioned on the target skeleton. The two-branch attention injection is
+            # off (flow_no_injection), so the branches don't interact and we run the
+            # plain conditioned forward used by the conditioned-inversion path: a
+            # 2-entry mid (size != 4) routes the U-Net through its non-injection branch.
+            lmi = cur_latents
+            cn_in = rearrange(lmi, "b c f h w -> (b f) c h w").to(dtype=self.controlnet.dtype)
+            cn_cond = torch.cat([images] * lmi.size(0), dim=0)  # match cn_in (b f) batch
             down, mid = self.controlnet(
                 cn_in, t_model,
-                encoder_hidden_states=cn_emb.repeat(video_length, 1, 1),
-                controlnet_cond=images, conditioning_scale=1.0, return_dict=False,
+                encoder_hidden_states=text_embeddings.repeat_interleave(video_length, dim=0),
+                controlnet_cond=cn_cond, conditioning_scale=1.0, return_dict=False,
             )
             down = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in down]
             mid = rearrange(mid, "(b f) c h w -> b c f h w", f=video_length)
-            src_mid = torch.zeros_like(mid)
-            mid = torch.cat([torch.unsqueeze(src_mid[0], dim=0), torch.unsqueeze(mid[0], dim=0),
-                             torch.unsqueeze(src_mid[1], dim=0), torch.unsqueeze(mid[1], dim=0)], dim=0)
             v = self.unet(
                 lmi, t_model, encoder_hidden_states=text_embeddings,
                 down_block_additional_residuals=down, mid_block_additional_residual=mid,
                 source_masks=None, target_masks=None, rectangle_source_masks=None, skeleton=None,
             ).sample.to(dtype=latents_dtype)
-            if do_classifier_free_guidance:
-                v_u, v_t = v.chunk(2)
-                v = v_u + guidance_scale * (v_t - v_u)
             return v
 
         if flow_sampling:
