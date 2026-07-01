@@ -36,7 +36,7 @@ validation_data:
   width: 512
   height: 512
   noise_level: 0
-  num_inference_steps: 20       # DPM-Solver++ forward steps; sweep 10/15/20/25
+  num_inference_steps: 15       # DPM-Solver++ forward steps; sweep 10/15/20/25
   num_inv_steps: 50             # DDIM inversion steps (latent preparation)
   guidance_scale: 7.5           # CFG ON, like the sharp epsilon baseline
   use_null_inv: False           # plain DDIM inversion (avoids null-text 50-step assert)
@@ -51,6 +51,10 @@ validation_data:
 
   # ---- flow paths OFF (do not touch the flow config) ----
   use_flow_inversion: False
+
+  # ---- C3 Stage 1: record the DPM teacher trajectory for consistency pairs ----
+  # Change this path + `seed` below for each run (traj_s33 / _s34 / _s35).
+  dump_trajectory_to: runs/c3/traj_s33.pt
 
 input_batch_size: 1
 seed: 33
