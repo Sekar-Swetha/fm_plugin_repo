@@ -1,0 +1,53 @@
+# C3: few-step consistency-distilled sampling of the case-1 student.
+# Separate from the flow (eval-motion.yaml) and DPM (eval-motion-dpm.yaml) configs.
+# Only the consistency path runs: use_consistency True, flow/dpm OFF.
+# resume_from_checkpoint = the C3 student (from train_consistency.py --out).
+pretrained_model_path: checkpoints/stable-diffusion-v1-5
+output_dir: "outputs/eval-case-1-cons"
+resume_from_checkpoint: "outputs/train-case-1-cons"
+adapter_weight_path: "outputs/train-case-1-cons/controlnet_adapter.pth"
+
+input_data:
+  video_dir: "data/case-1"
+  prompt: "a girl is dancing"
+  n_sample_frames: 8
+  width: 512
+  height: 512
+  sample_start_idx: 0
+  sample_frame_rate: 1
+  condition: [openposefull]
+  video_suffix: .png
+  condition_suffix: .png
+  noise_level: 10000
+  image_embed_drop: 0.1
+  source_mask_dir: man.mask
+
+validation_data:
+  prompts:
+    - "a girl is dancing"
+  video_length: 8
+  width: 512
+  height: 512
+  noise_level: 0
+  num_inference_steps: 20       # used only for the DDIM inversion that seeds x_init
+  num_inv_steps: 50
+  guidance_scale: 1.0
+  use_null_inv: False
+  controlnet_conditioning_scale: 1.0
+
+  # ---- C3 consistency few-step sampling ----
+  use_consistency: True
+  consistency_steps: 4          # sweep 4 -> 2 -> 1
+
+  # ---- flow / dpm OFF ----
+  use_flow_inversion: False
+  use_dpm_solver: False
+
+input_batch_size: 1
+seed: 33
+mixed_precision: "no"
+gradient_checkpointing: True
+enable_xformers_memory_efficient_attention: True
+use_sc_attn: True
+use_st_attn: False
+st_attn_idx: 0

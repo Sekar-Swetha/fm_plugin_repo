@@ -464,6 +464,40 @@ def main(
 
         ddim_inv_latent = ddim_inv_latent.repeat(2, 1, 1, 1, 1)
 
+        # ====== Contribution C3: few-step consistency-distilled sampling ======
+        # Isolated from flow/DPM. Samples the student in `consistency_steps` steps
+        # from the inverted source latent (edit branch), conditioned on the target
+        # skeleton, then decodes. Bypasses the DDIM/flow/DPM loop entirely.
+        if getattr(validation_data, "use_consistency", False):
+            from diffusers import DDPMScheduler as _DDPM
+            from motion_editor.consistency_plugin import consistency_sample, conditioned_eps
+            _ns = _DDPM.from_pretrained(pretrained_model_path, subfolder="scheduler")
+            _ac = _ns.alphas_cumprod
+            _alphas = torch.sqrt(_ac)
+            _sigmas = torch.sqrt(1.0 - _ac)
+            _steps = getattr(validation_data, "consistency_steps", 4)
+            _sched = [int(round((1.0 - i / _steps) * 999)) for i in range(_steps)]  # descending t
+            _ehs = text_encoder(input_dataset.prompt_ids.to(latents.device).unsqueeze(0))[0]
+            _imgs = validation_pipeline.prepare_image(
+                image=target_skeleton, width=input_data.width, height=input_data.height,
+                batch_size=1, num_images_per_prompt=1, device=latents.device,
+                dtype=controlnet.dtype, do_classifier_free_guidance=False)
+            _imgs = rearrange(_imgs, "b f c h w -> (b f) c h w").to(controlnet.device, controlnet.dtype)
+
+            def _cons_model_fn(x, t):
+                ts = torch.full((x.shape[0] * video_length,), int(t),
+                                device=x.device, dtype=torch.long)
+                return conditioned_eps(unet, controlnet, x, ts, _imgs, _ehs, video_length).float()
+
+            _x_init = ddim_inv_latent[1:2].to(weight_dtype)   # single edit branch
+            _x0 = consistency_sample(_cons_model_fn, _x_init, _sched, _alphas, _sigmas,
+                                     generator=generator)
+            _video = torch.from_numpy(validation_pipeline.decode_latents(_x0.to(weight_dtype)))
+            save_videos_grid(_video, f"{output_dir}/sample-consistency.gif", fps=fps)
+            print(f"[c3] consistency sample ({_steps} steps) -> {output_dir}/sample-consistency.gif")
+            return
+        # ======================================================================
+
         for idx, prompt in enumerate(validation_data.prompts):
             prompts = [input_dataset.prompt, prompt]  # a list of two prompts
             validation_target_skeleton = target_skeleton
@@ -486,8 +520,23 @@ def main(
                 fully_editor = FullySelfAttentionControlMask(start_step=STEP, start_layer=LAYPER, ref_token_idx=train_index, cur_token_idx=validate_index, source_masks=source_masks, target_masks=None, rectangle_source_masks=None, mask_save_dir=None)
                 regiter_fully_attention_editor_diffusers(validation_pipeline, fully_editor)
 
+            # ---- C3 Stage 1: record the DPM teacher trajectory for consistency pairs ----
+            _c3_traj = []
+            _c3_dump = getattr(validation_data, "dump_trajectory_to", None)
+
+            def _c3_callback(step, t, latents_cb):
+                # callback fires post-step; latents_cb labelled with the stepped-from
+                # timestep t (adjacent-timestep alpha/sigma error is small). Record
+                # the edit branch (index 1).
+                _c3_traj.append((int(t.item()) if torch.is_tensor(t) else int(t),
+                                 latents_cb[1:2].detach().cpu().float()))
+
+            _c3_cb = _c3_callback if _c3_dump else None
+
             sample = validation_pipeline(prompts,
                                          generator=generator,
+                                         callback=_c3_cb,
+                                         callback_steps=1,
                                          latents=ddim_inv_latent,
                                          uncond_embeddings=uncond_embeddings,
                                          skeleton=skeleton,
@@ -519,6 +568,17 @@ def main(
                 )
                 print(f"[distill] saved (z_src, z_edit_sharp, cond) -> {validation_data.distill_dump_to}")
             # ===========================================================================
+
+            # ---- C3 Stage 1: save the recorded teacher trajectory + prepared cond ----
+            if _c3_dump:
+                _c3_cond = rearrange(
+                    validation_pipeline.prepare_image(
+                        image=target_skeleton, width=input_data.width, height=input_data.height,
+                        batch_size=1, num_images_per_prompt=1, device=latents.device,
+                        dtype=controlnet.dtype, do_classifier_free_guidance=False),
+                    "b f c h w -> (b f) c h w").detach().cpu().float()
+                torch.save({"traj": _c3_traj, "cond": _c3_cond}, _c3_dump)
+                print(f"[c3] saved {len(_c3_traj)}-point trajectory -> {_c3_dump}")
 
             assert sample.shape[0] == 2
             sample_inv, sample_gen = sample.chunk(2)
