@@ -1,0 +1,62 @@
+# DPM-Solver++ (PF-ODE) sampling of the SHARP EPSILON MotionEditor editor.
+# Separate from eval-motion.yaml (the C2 flow config) so the flow work is
+# untouched. No flow paths run here: use_flow_inversion is False, use_dpm_solver
+# is True. Sharpness comes from the frozen pretrained epsilon model; DPM-Solver++
+# is just a high-order deterministic PF-ODE solver -> sharp in ~15-20 steps.
+#
+# CHECKPOINT: point these at the ORIGINAL epsilon adapter (the one that produced
+# fm_outputs/baseline_epsilon_case1.gif / distill_teacher_case1.gif), NOT a *-fm
+# (flow) checkpoint. Confirm the exact filenames on the box:
+#   ls outputs/train-case-1-motion/ | grep -v fm
+pretrained_model_path: checkpoints/stable-diffusion-v1-5
+output_dir: "outputs/eval-case-1-dpm"
+resume_from_checkpoint: "outputs/train-case-1-motion/checkpoint-300"
+adapter_weight_path: "outputs/train-case-1-motion/controlnet_adapter_checkpoint-300.pth"
+
+input_data:
+  video_dir: "data/case-1"
+  prompt: "a girl is dancing"
+  n_sample_frames: 8
+  width: 512
+  height: 512
+  sample_start_idx: 0
+  sample_frame_rate: 1
+  condition: [openposefull]
+  video_suffix: .png
+  condition_suffix: .png
+  noise_level: 10000
+  image_embed_drop: 0.1
+  source_mask_dir: man.mask
+
+validation_data:
+  prompts:
+    - "a girl is dancing"
+
+  video_length: 8
+  width: 512
+  height: 512
+  noise_level: 0
+  num_inference_steps: 20       # DPM-Solver++ forward steps; sweep 10/15/20/25
+  num_inv_steps: 50             # DDIM inversion steps (latent preparation)
+  guidance_scale: 7.5           # CFG ON, like the sharp epsilon baseline
+  use_null_inv: False           # plain DDIM inversion (avoids null-text 50-step assert)
+  controlnet_conditioning_scale: 1.0
+
+  # ---- DPM-Solver++ (PF-ODE) sampler ----
+  use_dpm_solver: True
+  dpm_algorithm_type: "dpmsolver++"
+  dpm_solver_order: 2
+  dpm_solver_type: "midpoint"
+  dpm_use_karras_sigmas: False  # 0.15.1 may not support; plugin ignores if absent
+
+  # ---- flow paths OFF (do not touch the flow config) ----
+  use_flow_inversion: False
+
+input_batch_size: 1
+seed: 33
+mixed_precision: "no"
+gradient_checkpointing: True
+enable_xformers_memory_efficient_attention: True
+use_sc_attn: True
+use_st_attn: False
+st_attn_idx: 0

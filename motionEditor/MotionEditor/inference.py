@@ -33,6 +33,7 @@ from motion_editor.models.unet_2d_condition import UNet2DConditionModel
 from motion_editor.data.dataset import VideoDataset
 from motion_editor.p2p.null_text_optimization import MyNullInversion
 from motion_editor.pipelines.pipeline_motion_editor import MotionEditorPipeline
+from motion_editor.dpm_solver_plugin import enable_dpm_solver
 from motion_editor.util import save_videos_grid, save_videos_as_images, ddim_inversion
 # ====== Contribution B: flow inversion (optional, gated by use_flow_inversion) ======
 try:
@@ -205,6 +206,21 @@ def main(
         controlnet=controlnet,
     )
     validation_pipeline.enable_vae_slicing()
+
+    # ---- DPM-Solver++ (PF-ODE) sampling of the sharp epsilon editor ----
+    # Isolated from the flow-matching paths: only swaps the forward-sampling
+    # scheduler. Fires only when the config sets `use_dpm_solver: True`, which is
+    # mutually exclusive with `use_flow_inversion` (leave that False). See
+    # motion_editor/dpm_solver_plugin.py for the theory.
+    if getattr(validation_data, "use_dpm_solver", False):
+        enable_dpm_solver(
+            validation_pipeline,
+            algorithm_type=getattr(validation_data, "dpm_algorithm_type", "dpmsolver++"),
+            solver_order=getattr(validation_data, "dpm_solver_order", 2),
+            solver_type=getattr(validation_data, "dpm_solver_type", "midpoint"),
+            use_karras_sigmas=getattr(validation_data, "dpm_use_karras_sigmas", False),
+        )
+
     ddim_inv_scheduler = DDIMScheduler.from_pretrained(pretrained_model_path, subfolder='scheduler')
     ddim_inv_scheduler.set_timesteps(validation_data.num_inv_steps)
 
