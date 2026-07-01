@@ -485,9 +485,7 @@ def main(
             _imgs = rearrange(_imgs, "b f c h w -> (b f) c h w").to(controlnet.device, controlnet.dtype)
 
             def _cons_model_fn(x, t):
-                ts = torch.full((x.shape[0] * video_length,), int(t),
-                                device=x.device, dtype=torch.long)
-                return conditioned_eps(unet, controlnet, x, ts, _imgs, _ehs, video_length).float()
+                return conditioned_eps(unet, controlnet, x, int(t), _imgs, _ehs, video_length).float()
 
             _x_init = ddim_inv_latent[1:2].to(weight_dtype)   # single edit branch
             _x0 = consistency_sample(_cons_model_fn, _x_init, _sched, _alphas, _sigmas,

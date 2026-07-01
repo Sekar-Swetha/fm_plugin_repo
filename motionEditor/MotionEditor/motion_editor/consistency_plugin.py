@@ -24,17 +24,22 @@ def conditioned_eps(unet, controlnet, x, t, cond_images, encoder_hidden_states, 
     """
     from einops import rearrange  # lazy: only needed for the real GPU forward
 
+    # Size-1 timestep: both ControlNet (input batch b*f) and the U-Net (input
+    # batch b) call timesteps.expand(sample.shape[0]), and a size-1 tensor expands
+    # to either. `t` is a plain int / 0-d.
+    t_in = torch.as_tensor(int(t), device=x.device, dtype=torch.long).reshape(1)
+
     cn_in = rearrange(x, "b c f h w -> (b f) c h w").to(dtype=controlnet.dtype)
     cn_cond = torch.cat([cond_images] * x.shape[0], dim=0)
     down, mid = controlnet(
-        cn_in, t,
+        cn_in, t_in,
         encoder_hidden_states=encoder_hidden_states.repeat_interleave(video_length, dim=0),
         controlnet_cond=cn_cond, conditioning_scale=1.0, return_dict=False,
     )
     down = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in down]
     mid = rearrange(mid, "(b f) c h w -> b c f h w", f=video_length)
     return unet(
-        x, t, encoder_hidden_states=encoder_hidden_states,
+        x, t_in, encoder_hidden_states=encoder_hidden_states,
         down_block_additional_residuals=down, mid_block_additional_residual=mid,
         source_masks=None, target_masks=None, rectangle_source_masks=None, skeleton=None,
     ).sample

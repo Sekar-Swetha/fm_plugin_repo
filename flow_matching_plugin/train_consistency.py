@@ -109,9 +109,8 @@ def main():
     state = {"cond": None}
 
     def _eps(x, t):
-        ts = torch.full((x.shape[0] * video_length,), int(t), device=accelerator.device, dtype=torch.long)
         return conditioned_eps(
-            unet, controlnet, x.to(accelerator.device, dtype), ts,
+            unet, controlnet, x.to(accelerator.device, dtype), int(t),
             state["cond"].to(accelerator.device, dtype), ehs, video_length).float()
 
     def student_eps_fn(x, t):
