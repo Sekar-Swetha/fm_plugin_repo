@@ -54,7 +54,10 @@ def main():
     args = ap.parse_args()
 
     device = "cuda"
-    dtype = torch.float16
+    # float32 throughout: the UNet loads in float32 under mixed_precision="no",
+    # so inputs, ControlNet, and cond tensors must match (conv2d requires equal
+    # input/weight dtype). If this OOMs at 8 frames, switch to fp16 + autocast.
+    dtype = torch.float32
     video_length = 8
 
     # Model loading mirrors inference.py:166,263-266 exactly:
