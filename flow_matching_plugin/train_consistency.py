@@ -28,12 +28,21 @@ def consistency_train_step(student_eps_fn, ema_eps_fn, pair, alphas, sigmas, del
     """One consistency step. student_eps_fn/ema_eps_fn: (x, t_int) -> eps.
 
     L = pseudo_huber( f_student(x_hi, t_hi), stopgrad f_ema(x_lo, t_lo) ).
+
+    x_hi/x_lo and the alpha/sigma scalars are moved onto the eps device+dtype so
+    the arithmetic is consistent whether eps comes from a CPU stub (tests) or a
+    GPU model (real training).
     """
-    a_hi, s_hi = alphas[pair.t_hi], sigmas[pair.t_hi]
-    a_lo, s_lo = alphas[pair.t_lo], sigmas[pair.t_lo]
-    student_x0 = predict_x0_from_eps(pair.x_hi, student_eps_fn(pair.x_hi, pair.t_hi), a_hi, s_hi)
+    eps_hi = student_eps_fn(pair.x_hi, pair.t_hi)
+    dev = eps_hi.device
+    student_x0 = predict_x0_from_eps(
+        pair.x_hi.to(dev, eps_hi.dtype), eps_hi,
+        alphas[pair.t_hi].to(dev), sigmas[pair.t_hi].to(dev))
     with torch.no_grad():
-        target_x0 = predict_x0_from_eps(pair.x_lo, ema_eps_fn(pair.x_lo, pair.t_lo), a_lo, s_lo)
+        eps_lo = ema_eps_fn(pair.x_lo, pair.t_lo)
+        target_x0 = predict_x0_from_eps(
+            pair.x_lo.to(dev, eps_lo.dtype), eps_lo,
+            alphas[pair.t_lo].to(dev), sigmas[pair.t_lo].to(dev))
     return pseudo_huber_loss(student_x0, target_x0, delta=delta)
 
 
@@ -54,10 +63,11 @@ def main():
     args = ap.parse_args()
 
     device = "cuda"
-    # float32 throughout: the UNet loads in float32 under mixed_precision="no",
-    # so inputs, ControlNet, and cond tensors must match (conv2d requires equal
-    # input/weight dtype). If this OOMs at 8 frames, switch to fp16 + autocast.
-    dtype = torch.float32
+    # fp16 mixed precision to fit 8 frames (mirrors train_adaptor_fm.py): ControlNet,
+    # text-encoder and inputs are fp16; the UNet keeps fp32 master weights and its
+    # accelerator-wrapped forward runs under autocast. Gradient checkpointing trades
+    # compute for memory on the big frame-concatenated self-attention.
+    dtype = torch.float16
     video_length = 8
 
     # Model loading mirrors inference.py:166,263-266 exactly:
@@ -69,7 +79,7 @@ def main():
     from transformers import CLIPTextModel, CLIPTokenizer
     from motion_editor.models.unet_2d_condition import UNet2DConditionModel
 
-    accelerator = Accelerator(mixed_precision="no")
+    accelerator = Accelerator(mixed_precision="fp16")
     tokenizer = CLIPTokenizer.from_pretrained(args.pretrained_model_path, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(args.pretrained_model_path, subfolder="text_encoder")
     unet = UNet2DConditionModel.from_pretrained(
@@ -77,12 +87,13 @@ def main():
         use_sc_attn=True, use_st_attn=False, st_attn_idx=0)
     controlnet = ControlNetModel.from_pretrained("checkpoints/sd-controlnet-openpose", torch_dtype=dtype)
 
-    unet = accelerator.prepare(unet)
-    accelerator.load_state(args.resume_from_checkpoint)              # trained epsilon UNet
+    unet.enable_gradient_checkpointing()                            # fit 8 frames
+    unet = accelerator.prepare(unet)                               # autocast-wrapped forward
+    accelerator.load_state(args.resume_from_checkpoint)            # trained epsilon UNet
     unet.controlnet_adapter.load_state_dict(torch.load(args.adapter_weight_path))  # motion adapter
 
     text_encoder.to(accelerator.device, dtype)
-    controlnet.to(accelerator.device)
+    controlnet.to(accelerator.device, dtype)
 
     noise_sched = DDPMScheduler.from_pretrained(args.pretrained_model_path, subfolder="scheduler")
     ac = noise_sched.alphas_cumprod
@@ -99,7 +110,7 @@ def main():
             trainable.append(p)
     print(f"[c3] {len(trainable)} trainable tensors ({sum(p.numel() for p in trainable)} params)")
     ema = [p.detach().clone() for p in trainable]
-    opt = torch.optim.AdamW(trainable, lr=args.lr)
+    opt = accelerator.prepare(torch.optim.AdamW(trainable, lr=args.lr))
 
     prompt_ids = tokenizer(args.prompt, return_tensors="pt").input_ids.to(accelerator.device)
     ehs = text_encoder(prompt_ids)[0]
@@ -136,7 +147,7 @@ def main():
             loss = consistency_train_step(student_eps_fn, ema_eps_fn, pair,
                                           alphas, sigmas, delta=args.delta)
             opt.zero_grad()
-            loss.backward()
+            accelerator.backward(loss)
             opt.step()
             ema_update(ema, trainable, decay=args.ema_decay)
             if step % 50 == 0:
