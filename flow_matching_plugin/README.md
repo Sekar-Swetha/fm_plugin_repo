@@ -94,6 +94,36 @@ The output goes to a different `output_dir` so the baseline and CFM-OT
 checkpoints can coexist. The checkpoint format is unchanged (same
 state-dict keys); the filename suffix is `_fm` for traceability.
 
+### 4. Contribution C3 — few-step consistency-distilled editor (GPU)
+
+Distils the sharp DPM-Solver++ epsilon teacher into a 1–4 step editor for one
+video. Design/plan in `docs/superpowers/specs/2026-07-01-consistency-distillation-c3-design.md`
+and `docs/superpowers/plans/2026-07-01-consistency-distillation-c3.md`. Three
+stages (teacher and student never co-reside in GPU memory):
+
+```bash
+# From motionEditor/MotionEditor/ with the epsilon checkpoint (checkpoint-300).
+
+# Stage 1 — record the sharp DPM teacher trajectory (repeat with 3 seeds).
+#   add to configs/case-1/eval-motion-dpm.yaml:  dump_trajectory_to: runs/c3/traj_s33.pt
+python3 inference.py --config configs/case-1/eval-motion-dpm.yaml     # change seed + dump path, x3
+python3 ../../flow_matching_plugin/generate_consistency_pairs.py \
+    --traj "runs/c3/traj_s*.pt" --out runs/c3/pairs.pt
+
+# Stage 2 — consistency-distil the student (only the student is in memory).
+python3 ../../flow_matching_plugin/train_consistency.py \
+    --pairs-dir runs/c3/pairs.pt \
+    --resume-from-checkpoint outputs/train-case-1-motion/checkpoint-300 \
+    --adapter-weight-path outputs/train-case-1-motion/controlnet_adapter_checkpoint-300.pth \
+    --out outputs/train-case-1-cons --num-steps 2000
+
+# Stage 3 — few-step sampling (sweep consistency_steps 4 -> 2 -> 1).
+python3 inference.py --config configs/case-1/eval-motion-consistency.yaml
+```
+
+CPU unit tests (no GPU): `python -m pytest tests/test_consistency.py
+tests/test_consistency_sampler.py tests/test_consistency_train_smoke.py -q`.
+
 ## Config keys added on top of MotionEditor
 
 The CFM trainer accepts everything `train_adaptor.py` accepts plus:
