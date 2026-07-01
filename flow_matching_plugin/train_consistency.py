@@ -76,6 +76,7 @@ def main():
     #   - ControlNet from the base sd-controlnet-openpose
     from accelerate import Accelerator
     from diffusers import ControlNetModel, DDPMScheduler
+    from diffusers.utils.import_utils import is_xformers_available
     from transformers import CLIPTextModel, CLIPTokenizer
     from motion_editor.models.unet_2d_condition import UNet2DConditionModel
 
@@ -87,10 +88,19 @@ def main():
         use_sc_attn=True, use_st_attn=False, st_attn_idx=0)
     controlnet = ControlNetModel.from_pretrained("checkpoints/sd-controlnet-openpose", torch_dtype=dtype)
 
-    unet.enable_gradient_checkpointing()                            # fit 8 frames
+    # Memory (mirror train_adaptor_fm.py:148,154,300 — required to fit 8 frames):
+    #   - memory-efficient attention routes away from the naive baddbmm (8 GB/softmax)
+    #     to the Blackwell SDPA shim;
+    #   - gradient checkpointing recomputes instead of retaining activations, but ONLY
+    #     when the module is in train() mode (the guard is `self.training and
+    #     self.gradient_checkpointing`).
+    if is_xformers_available():
+        unet.enable_xformers_memory_efficient_attention()
+    unet.enable_gradient_checkpointing()
     unet = accelerator.prepare(unet)                               # autocast-wrapped forward
     accelerator.load_state(args.resume_from_checkpoint)            # trained epsilon UNet
     unet.controlnet_adapter.load_state_dict(torch.load(args.adapter_weight_path))  # motion adapter
+    unet.train()                                                   # activate gradient checkpointing
 
     text_encoder.to(accelerator.device, dtype)
     controlnet.to(accelerator.device, dtype)
