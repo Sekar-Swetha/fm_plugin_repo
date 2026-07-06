@@ -14,6 +14,7 @@ from metrics import (  # noqa: E402
     laplacian_sharpness_masked,
     load_frames,
     load_gif_frames,
+    load_walltime,
     region_weighted_mean,
     ssim_map,
     subject_region,
@@ -148,3 +149,16 @@ def test_masked_sharpness_higher_for_textured_region():
 def test_masked_sharpness_none_without_mask():
     x = torch.rand(1, 3, 8, 8)
     assert laplacian_sharpness_masked(x, None) is None
+
+
+def test_load_walltime_reads_frames_json(tmp_path):
+    import json
+    import os
+    fdir = os.path.join(tmp_path, "run_frames")
+    os.makedirs(fdir)
+    json.dump({"seconds": 42.5, "nfe": 4}, open(os.path.join(fdir, "walltime.json"), "w"))
+    assert load_walltime(str(tmp_path), "run.gif") == 42.5
+
+
+def test_load_walltime_missing_is_none(tmp_path):
+    assert load_walltime(str(tmp_path), "none.gif") is None

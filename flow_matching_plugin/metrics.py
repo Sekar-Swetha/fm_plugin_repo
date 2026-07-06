@@ -315,6 +315,20 @@ def load_frames(outputs_dir, rel, size=512):
     return load_gif_frames(os.path.join(outputs_dir, rel), size), "gif"
 
 
+def load_walltime(outputs_dir, rel):
+    """Total-edit wall-clock (s) written by inference.py into the frames dir, or
+    None. An explicit --timings entry overrides this."""
+    frames_dir = os.path.join(outputs_dir, rel[:-4] + "_frames") if rel.endswith(".gif") \
+        else os.path.join(outputs_dir, rel + "_frames")
+    p = os.path.join(frames_dir, "walltime.json")
+    if os.path.exists(p):
+        try:
+            return float(json.load(open(p))["seconds"])
+        except Exception:
+            return None
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outputs-dir", required=True)
@@ -381,7 +395,7 @@ def main():
                 subj_lp = region_weighted_mean(lpips_map(lpips_net, frames, teacher, device), subj)
                 subj_ss = region_weighted_mean(ssim_map(frames, teacher), subj)
 
-        wc = timings.get(name)
+        wc = timings.get(name, load_walltime(args.outputs_dir, rel))
         rows.append(dict(name=name, nfe=nfe, sharp=sharp, subj_sharp=subj_sharp,
                          pd_t=pd_t, pd_tg=pd_tg, bg_lp=bg_lp, subj_lp=subj_lp,
                          bg_ss=bg_ss, subj_ss=subj_ss, lp_s=lp_s, lp_t=lp_t, cs=cs,
@@ -393,14 +407,14 @@ def main():
     # SUBJECT-region Sharpness (isolates subject blur), bg SSIM (scene preserved),
     # PoseDist-vs-target (fidelity). Reference-based subject LPIPS/SSIM kept but
     # confounded (residual pose mismatch + colour shift); global LPIPS for continuity.
-    cols = ("| Method | NFE | Sharpness ↑ | **subj Sharpness ↑** | bg SSIM ↑ | "
+    cols = ("| Method | NFE | Wall-clock (s) ↓ | Sharpness ↑ | **subj Sharpness ↑** | bg SSIM ↑ | "
             "PoseDist-vs-target ↓ | bg LPIPS-src ↓ | subj LPIPS-teacher ↓ (conf.) | "
             "subj SSIM ↑ (conf.) | LPIPS-src global (conf.) | frames |\n"
-            "|---|---|---|---|---|---|---|---|---|---|\n")
+            "|---|---|---|---|---|---|---|---|---|---|---|\n")
     lines = [cols]
     for r in rows:
         lines.append(
-            f"| {r['name']} | {r['nfe'] if r['nfe'] is not None else '-'} | "
+            f"| {r['name']} | {r['nfe'] if r['nfe'] is not None else '-'} | {fmt(r['wc'],1)} | "
             f"{fmt(r['sharp'],5)} | {fmt(r['subj_sharp'],5)} | {fmt(r['bg_ss'])} | "
             f"{fmt(r['pd_tg'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
             f"{fmt(r['subj_ss'])} | {fmt(r['lp_s'])} | {r['fsrc']} |\n")

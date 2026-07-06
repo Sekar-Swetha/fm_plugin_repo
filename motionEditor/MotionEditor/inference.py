@@ -1,6 +1,8 @@
 import argparse
 import datetime
+import json as _json
 import logging
+import time
 import inspect
 import math
 import os
@@ -35,6 +37,15 @@ from motion_editor.p2p.null_text_optimization import MyNullInversion
 from motion_editor.pipelines.pipeline_motion_editor import MotionEditorPipeline
 from motion_editor.dpm_solver_plugin import enable_dpm_solver
 from motion_editor.util import save_videos_grid, save_videos_as_images, ddim_inversion
+
+
+def _write_walltime(out_dir, seconds, nfe=None):
+    """Write total-edit wall-clock (inversion + sampling + decode) next to the
+    frames so it travels with the copy; metrics reads <frames_dir>/walltime.json."""
+    import os as _os
+    _os.makedirs(out_dir, exist_ok=True)
+    with open(_os.path.join(out_dir, "walltime.json"), "w") as f:
+        _json.dump({"seconds": float(seconds), "nfe": nfe}, f)
 
 
 def _dump_frames(video, out_dir):
@@ -361,6 +372,7 @@ def main(
         generator.manual_seed(seed)
 
         # perform inversion
+        _t0 = time.perf_counter()          # total edit wall-clock (inversion + sampling + decode)
         ddim_inv_latent = None
         # ====== Contribution B: ODE flow inversion (replaces DDIM + null-text) ======
         # Gated by `use_flow_inversion` in the eval config. When off, the baseline
@@ -504,10 +516,13 @@ def main(
             _x0 = consistency_sample(_cons_model_fn, _x_init, _sched, _alphas, _sigmas,
                                      generator=generator)
             _video = torch.from_numpy(validation_pipeline.decode_latents(_x0.to(weight_dtype)))
+            _elapsed = time.perf_counter() - _t0
             save_videos_grid(_video, f"{output_dir}/sample-consistency.gif", fps=fps)
             if getattr(validation_data, "save_frames", True):
                 _dump_frames(_video, f"{output_dir}/sample-consistency_frames")
-            print(f"[c3] consistency sample ({_steps} steps) -> {output_dir}/sample-consistency.gif")
+                _write_walltime(f"{output_dir}/sample-consistency_frames", _elapsed, _steps)
+            print(f"[c3] consistency sample ({_steps} steps, {_elapsed:.1f}s) "
+                  f"-> {output_dir}/sample-consistency.gif")
             return
         # ======================================================================
 
@@ -611,6 +626,9 @@ def main(
         save_videos_grid(samples, save_path.replace(".gif", ".mp4"), fps=fps)
         if getattr(validation_data, "save_frames", True):
             _dump_frames(samples, f"{output_dir}/sample-all_frames")          # edit-branch lossless frames
+            _write_walltime(f"{output_dir}/sample-all_frames",
+                            time.perf_counter() - _t0,
+                            getattr(validation_data, "num_inference_steps", None))
 
         save_videos_grid(sample_reconstruct, save_reconstruct_path, fps=fps)
         save_videos_grid(sample_reconstruct, save_reconstruct_path.replace(".gif", ".mp4"), fps=fps)
