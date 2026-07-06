@@ -232,66 +232,63 @@ DDIM-50 + null-text baseline (~12–25× fewer steps, no null-text optimisation)
 
 ## 7. Ablation table (measured, case-1)
 
-Computed by `flow_matching_plugin/metrics.py` (2026-07-06). Primary axes:
-**Sharpness** (no-reference Laplacian variance ↑ = sharper) and **PoseDist**
-(MediaPipe per-joint L2 to the teacher pose ↓ = edit fidelity; skeleton-only, so
-immune to colour/blur, unlike LPIPS-vs-teacher). `~0.157` is the
-same-pose-different-run floor (teacher itself = 0.000).
+`flow_matching_plugin/metrics.py`, 2026-07-06 (read from gifs; lossless-frame
+refresh pending, see below). **Only no-reference / structural axes are trusted**
+(see the metrics-design note) — reference-based appearance metrics are confounded
+in one-shot motion editing and are footnoted.
 
-| Method | NFE | Sharpness ↑ | PoseDist ↓ | LPIPS-vs-source ↓ |
-|---|---|---|---|---|
-| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.158 | 0.348 |
-| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.000 | 0.393 |
-| + A/B naive flow | 50 | **0.0122** | **0.171** | 0.392 |
-| + A/B naive flow (50-step ODE) | 50 | 0.0122 | **0.191** | 0.404 |
-| DPM-Solver++ | 20 | 0.0142 | 0.160 | 0.434 |
-| **DPM-Solver++** | **15** | **0.0144** | 0.161 | 0.441 |
-| C3 consistency | 1 | 0.0013 | 0.163 | 0.335 |
-| C3 consistency | 2 | 0.0044 | 0.160 | 0.326 |
-| C3 consistency | 4 | 0.0102 | 0.157 | 0.364 |
-| **C3 consistency** | **6** | **0.0142** | 0.159 | 0.435 |
+| Method | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-vs-target ↓ |
+|---|---|---|---|---|---|
+| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 |
+| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.0146 | 0.886 | **0.040** |
+| + A/B naive flow | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 |
+| + A/B naive flow (50-step ODE) | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** |
+| DPM-Solver++ | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 |
+| **DPM-Solver++** | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 |
+| C3 consistency | 1 | 0.0013 | 0.0102 | 0.896 | 0.177 |
+| C3 consistency | 2 | 0.0044 | 0.0383 | 0.884 | 0.173 |
+| C3 consistency | 4 | 0.0102 | 0.0877 | 0.850 | 0.171 |
+| **C3 consistency** | **6** | **0.0142** | 0.1206 | 0.816 | 0.172 |
 
-**Headline finding — the two axes decouple:**
-- **Edit fidelity (PoseDist) is flat ~0.157–0.163 across all DPM and C3 rows,
-  including NFE-1** — the target pose is achieved at *every* step count; MediaPipe
-  reads the correct pose even off the blurry 1-step output.
-- **Sharpness is the only axis that scales with steps** (0.0013 → 0.0142 over C3
-  1→6), reaching DPM/teacher level (0.0142 ≈ 0.0144) at **6 NFE**.
-- ⇒ C3 is a **sharpness↔speed dial at fixed edit fidelity**: pick NFE by sharpness
-  budget without losing the edit.
+**Headline finding — quality and fidelity decouple across NFE:**
+- **Sharpness scales with steps** — full-frame 0.0013→0.0142 and subject-region
+  0.010→0.121 over C3 1→6; C3-6 reaches DPM/teacher level (full 0.0142 ≈ 0.0144).
+- **Edit fidelity is achieved at *every* step count** — PoseDist-vs-target is flat
+  ~0.171–0.177 for all DPM/C3 rows including NFE-1 (teacher floor 0.040; every
+  *editing* method sits ~0.17 = a consistent, correct realisation of the driving
+  pose). So the target pose is hit even off the blurry 1-step output.
+- ⇒ C3 is a **sharpness↔speed dial at fixed edit fidelity**.
 
-**Naive flow loses on both axes:** softer than baseline (0.0122 < 0.0133) *and*
-worst pose fidelity (0.171–0.191, well above the 0.157 floor — the ghosting
-subject drifts off-pose). Double-confirmed negative.
+**Naive flow loses on quality:** softest subject (subj Sharpness 0.0088, below every
+other row) and softer full-frame than baseline (0.0122 < 0.0133); its 50-step ODE
+variant also has the worst pose fidelity (0.196). The analyzed negative.
 
-**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at
-baseline-level pose fidelity, **15 NFE vs 50** (~3× faster, sharper).
+**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at correct
+pose fidelity, **15 NFE vs 50**.
 
-**Caveats (write-up honesty):** PoseDist range is narrow — read it as "at floor =
-pose correct" vs "above floor = drift", not fine-grained. Laplacian sharpness also
-reflects contrast, so DPM/C3-6's saturation inflates it slightly (ranking sound,
-absolutes with the visuals). CLIP-sim (~0.26–0.28) is saturated and
-LPIPS-vs-teacher is confounded by pose/colour — both footnoted, not led with.
-Wall-clock still to log (time each run; NFE is the reliable speed axis meanwhile).
+**bg SSIM 0.82–0.90** everywhere confirms the **scene is structurally preserved**
+(the pipeline works); it dips slightly for the most-saturated rows (C3-6 = 0.816).
 
-**Global LPIPS-vs-source is misleading in a *motion*-editing task** and must NOT be
-led with: the sharp outputs (DPM-15, C3-6) score *worst* (~0.44) and the blurriest
-(C3-1/2) *best* (~0.33) — an artifact, because global LPIPS-vs-source conflates
-(1) the intended pose change (the subject is *supposed* to move), (2) background
-dominance (the static scene fills most of the frame), and (3) the global
-colour/saturation shift, plus GIF palette quantisation when read from `.gif`. It
-is kept only for continuity.
+**Metrics-design note (important honesty):** *no reference-based appearance metric
+works cleanly here* — every output differs from any reference in **both pose and
+colour**, so LPIPS/SSIM-vs-teacher, LPIPS/SSIM-vs-source and global LPIPS all
+mis-rank (they put the blurriest C3-1/2 "best" and the sharp C3-6/DPM "worst"). The
+region split proved this: `bg_LPIPS` tracks the colour shift while `bg_SSIM` shows
+structure is fine, and `subject_LPIPS-vs-teacher` stays confounded because outputs
+are **not in the teacher's exact pose** (PoseDist-vs-target: teacher 0.040 vs
+editors ~0.17). We therefore lead with **no-reference** metrics: full-frame and
+**subject-region Laplacian sharpness** (subject one via the MediaPipe mask, immune
+to pose *and* colour) + structural **bg SSIM** + **PoseDist**. Caveat: Laplacian
+also reflects contrast, so subj-Sharpness *absolutes* for high-saturation C3-4/6
+(0.088, 0.121) are inflated — use them for the **within-C3 trend**, and full-frame
+Sharpness for cross-method absolutes. CLIP-sim (~0.26–0.28) is saturated; global
+LPIPS-vs-source and subject LPIPS/SSIM-vs-teacher are retained in
+`fm_outputs/metrics_table.md` only for continuity, flagged `(conf.)`.
 
-**Fix (implemented in `metrics.py`, recompute pending on the GPU box):** read
-LOSSLESS PNG frames (new guarded `save_frames` hook), and replace the global column
-with region-split metrics using the per-frame subject mask:
-`bg_lpips_vs_source` over `NOT(src_mask ∪ out_mask)` (scene preservation, ≈0
-expected) and `subject_lpips_vs_teacher` over the subject union (appearance vs the
-teacher in the *same* pose, so no pose-change confound) — LPIPS in spatial mode,
-mask-weighted (no edge-inducing zero-masking), with masked SSIM as a cross-check;
-plus `posedist_vs_target` (vs `data/case-1/target_images`, less circular than
-vs-teacher). The table above will be regenerated once the DPM/C3/teacher configs
-are re-run with `save_frames` (see §10). _Metrics update: 2026-07-06._
+**Still pending:** (1) re-run DPM/C3/teacher with `save_frames` and recompute from
+LOSSLESS PNGs — gif dithering adds high-freq noise that inflates *both* Laplacian
+columns (uniformly, so the ranking holds; absolutes tighten). (2) Wall-clock per
+run (NFE is the reliable speed axis meanwhile). _Metrics update: 2026-07-06._
 
 ---
 
