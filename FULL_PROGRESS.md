@@ -274,6 +274,25 @@ absolutes with the visuals). CLIP-sim (~0.26–0.28) is saturated and
 LPIPS-vs-teacher is confounded by pose/colour — both footnoted, not led with.
 Wall-clock still to log (time each run; NFE is the reliable speed axis meanwhile).
 
+**Global LPIPS-vs-source is misleading in a *motion*-editing task** and must NOT be
+led with: the sharp outputs (DPM-15, C3-6) score *worst* (~0.44) and the blurriest
+(C3-1/2) *best* (~0.33) — an artifact, because global LPIPS-vs-source conflates
+(1) the intended pose change (the subject is *supposed* to move), (2) background
+dominance (the static scene fills most of the frame), and (3) the global
+colour/saturation shift, plus GIF palette quantisation when read from `.gif`. It
+is kept only for continuity.
+
+**Fix (implemented in `metrics.py`, recompute pending on the GPU box):** read
+LOSSLESS PNG frames (new guarded `save_frames` hook), and replace the global column
+with region-split metrics using the per-frame subject mask:
+`bg_lpips_vs_source` over `NOT(src_mask ∪ out_mask)` (scene preservation, ≈0
+expected) and `subject_lpips_vs_teacher` over the subject union (appearance vs the
+teacher in the *same* pose, so no pose-change confound) — LPIPS in spatial mode,
+mask-weighted (no edge-inducing zero-masking), with masked SSIM as a cross-check;
+plus `posedist_vs_target` (vs `data/case-1/target_images`, less circular than
+vs-teacher). The table above will be regenerated once the DPM/C3/teacher configs
+are re-run with `save_frames` (see §10). _Metrics update: 2026-07-06._
+
 ---
 
 ## 8. Decision & status vs the TA's plan
