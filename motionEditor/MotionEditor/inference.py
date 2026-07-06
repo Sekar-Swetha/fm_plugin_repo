@@ -35,6 +35,19 @@ from motion_editor.p2p.null_text_optimization import MyNullInversion
 from motion_editor.pipelines.pipeline_motion_editor import MotionEditorPipeline
 from motion_editor.dpm_solver_plugin import enable_dpm_solver
 from motion_editor.util import save_videos_grid, save_videos_as_images, ddim_inversion
+
+
+def _dump_frames(video, out_dir):
+    """Save a (b,c,t,h,w) video's first batch as LOSSLESS zero-padded PNGs
+    (0000.png..) for metrics — avoids GIF 256-colour quantisation. Metrics'
+    load_frames() reads exactly this layout."""
+    import os as _os
+    from PIL import Image as _Img
+    _os.makedirs(out_dir, exist_ok=True)
+    v = video[0].detach().clamp(0, 1)                 # (c,t,h,w)
+    v = (v * 255).byte().permute(1, 2, 3, 0).cpu().numpy()   # (t,h,w,c)
+    for i, fr in enumerate(v):
+        _Img.fromarray(fr).save(_os.path.join(out_dir, f"{i:04d}.png"))
 # ====== Contribution B: flow inversion (optional, gated by use_flow_inversion) ======
 try:
     import sys as _sys, os as _os
@@ -492,6 +505,8 @@ def main(
                                      generator=generator)
             _video = torch.from_numpy(validation_pipeline.decode_latents(_x0.to(weight_dtype)))
             save_videos_grid(_video, f"{output_dir}/sample-consistency.gif", fps=fps)
+            if getattr(validation_data, "save_frames", True):
+                _dump_frames(_video, f"{output_dir}/sample-consistency_frames")
             print(f"[c3] consistency sample ({_steps} steps) -> {output_dir}/sample-consistency.gif")
             return
         # ======================================================================
@@ -594,6 +609,9 @@ def main(
         save_reconstruct_path = f"{output_dir}/sample-all-inv.gif"
         save_videos_grid(samples, save_path, fps=fps)
         save_videos_grid(samples, save_path.replace(".gif", ".mp4"), fps=fps)
+        if getattr(validation_data, "save_frames", True):
+            _dump_frames(samples, f"{output_dir}/sample-all_frames")          # edit-branch lossless frames
+
         save_videos_grid(sample_reconstruct, save_reconstruct_path, fps=fps)
         save_videos_grid(sample_reconstruct, save_reconstruct_path.replace(".gif", ".mp4"), fps=fps)
         logger.info(f"Saved samples to {save_path}")

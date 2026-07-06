@@ -100,25 +100,113 @@ def laplacian_sharpness(frames01):
 
 
 def make_lpips(device):
+    """LPIPS in spatial mode: net(a,b) returns a per-pixel (N,1,H,W) distance map.
+    .mean() recovers the old global scalar; masking the map gives region metrics."""
     try:
         import lpips
     except ImportError:
         print("[metrics] `lpips` not installed (pip install lpips) — "
               "LPIPS columns will be blank.")
         return None
-    return lpips.LPIPS(net="alex").to(device).eval()
+    return lpips.LPIPS(net="alex", spatial=True).to(device).eval()
 
 
-def lpips_score(net, a01, b01, device):
-    """Mean LPIPS over frames. Inputs (N,3,H,W) in [0,1]; LPIPS wants [-1,1]."""
+def lpips_map(net, a01, b01, device):
+    """Per-pixel LPIPS distance map (N,1,H,W). Inputs (N,3,H,W) in [0,1]."""
     if net is None:
         return None
     a, b = align_len(a01, b01)
     a = (a * 2 - 1).to(device)
     b = (b * 2 - 1).to(device)
     with torch.no_grad():
-        d = net(a, b)
-    return float(d.mean().item())
+        return net(a, b).cpu()                       # (N,1,H,W)
+
+
+def lpips_score(net, a01, b01, device):
+    """Global mean LPIPS over frames (continuity with the old column)."""
+    m = lpips_map(net, a01, b01, device)
+    return None if m is None else float(m.mean().item())
+
+
+# ---- region masks + region-weighted reductions (pure, CPU-testable) ----
+
+def bg_region(src_mask, out_mask):
+    """Background = pixels that are background in BOTH source and output, so an
+    intended pose change (subject in one, scene in the other) is excluded.
+    Masks are (N,1,H,W) in [0,1] (subject=1). Returns (N,1,H,W)."""
+    src_mask, out_mask = align_len(src_mask, out_mask)
+    return (1.0 - src_mask) * (1.0 - out_mask)
+
+
+def subject_region(out_mask, ref_mask):
+    """Subject region = union of the output-subject and reference-subject masks."""
+    out_mask, ref_mask = align_len(out_mask, ref_mask)
+    return torch.clamp(out_mask + ref_mask, 0.0, 1.0)
+
+
+def region_weighted_mean(dist_map, region, eps=1e-6):
+    """Mask-weighted mean of a per-pixel map over a region, averaged over frames
+    that have any region mass. NO zero-masking of pixels — we weight the distance
+    map, so no spurious edges are introduced. dist_map/region: (N,1,H,W)."""
+    if dist_map is None:
+        return None
+    dist_map, region = align_len(dist_map, region)
+    num = (dist_map * region).flatten(1).sum(1)
+    den = region.flatten(1).sum(1)
+    vals = [float((num[i] / den[i]).item()) for i in range(len(den)) if den[i] > eps]
+    return float(np.mean(vals)) if vals else None
+
+
+def ssim_map(a01, b01, window=11, C1=0.01 ** 2, C2=0.03 ** 2):
+    """Per-pixel SSIM map (N,1,H,W) on luminance, uniform window (no skimage).
+    Higher = more similar. Used mask-weighted as a robustness cross-check."""
+    a, b = align_len(a01, b01)
+    ga = (0.299 * a[:, :1] + 0.587 * a[:, 1:2] + 0.114 * a[:, 2:3])
+    gb = (0.299 * b[:, :1] + 0.587 * b[:, 1:2] + 0.114 * b[:, 2:3])
+    k = torch.ones(1, 1, window, window) / (window * window)
+    pad = window // 2
+
+    def flt(x):
+        return torch.nn.functional.conv2d(x, k, padding=pad)
+
+    mu_a, mu_b = flt(ga), flt(gb)
+    mu_a2, mu_b2, mu_ab = mu_a * mu_a, mu_b * mu_b, mu_a * mu_b
+    va = flt(ga * ga) - mu_a2
+    vb = flt(gb * gb) - mu_b2
+    vab = flt(ga * gb) - mu_ab
+    return ((2 * mu_ab + C1) * (2 * vab + C2)) / ((mu_a2 + mu_b2 + C1) * (va + vb + C2))
+
+
+def make_seg():
+    """MediaPipe SelfieSegmentation for output/teacher subject masks. None if absent."""
+    try:
+        import mediapipe as mp
+    except ImportError:
+        print("[metrics] mediapipe not installed — region masks blank.")
+        return None
+    return mp.solutions.selfie_segmentation.SelfieSegmentation(model_selection=1)
+
+
+def subject_mask_seg(seg, frames01, thresh=0.5):
+    """(N,1,H,W) binary subject mask from MediaPipe SelfieSegmentation."""
+    if seg is None:
+        return None
+    masks = []
+    for f in frames01:
+        img = (f.permute(1, 2, 0).numpy() * 255).astype(np.uint8)   # HWC RGB
+        m = seg.process(img).segmentation_mask                       # (H,W) float
+        masks.append((m > thresh).astype(np.float32))
+    return torch.from_numpy(np.stack(masks)[:, None])                # (N,1,H,W)
+
+
+def load_mask_pngs(mask_dir, size=512):
+    """Load per-frame source-subject mask PNGs -> (N,1,H,W) in {0,1}."""
+    files = sorted(glob.glob(os.path.join(mask_dir, "*.png")))
+    ms = []
+    for fp in files:
+        m = Image.open(fp).convert("L").resize((size, size), Image.NEAREST)
+        ms.append((np.asarray(m, dtype=np.float32) / 255.0 > 0.5).astype(np.float32))
+    return torch.from_numpy(np.stack(ms)[:, None]) if ms else None
 
 
 def make_pose():
@@ -187,10 +275,31 @@ def fmt(v, nd=4):
     return "-" if v is None else f"{v:.{nd}f}"
 
 
+def load_frames(outputs_dir, rel, size=512):
+    """Prefer LOSSLESS per-frame PNGs over the quantised gif. Convention: a run at
+    `<rel>.gif` has clean frames at `<rel without .gif>_frames/*.png` (dumped by
+    inference.py's save_frames hook). Falls back to the gif if absent."""
+    frames_dir = os.path.join(outputs_dir, rel[:-4] + "_frames") if rel.endswith(".gif") \
+        else os.path.join(outputs_dir, rel + "_frames")
+    pngs = sorted(glob.glob(os.path.join(frames_dir, "*.png")))
+    if pngs:
+        fr = []
+        for p in pngs:
+            im = Image.open(p).convert("RGB").resize((size, size), Image.LANCZOS)
+            fr.append(np.asarray(im, dtype=np.float32) / 255.0)
+        return torch.from_numpy(np.stack(fr).transpose(0, 3, 1, 2)), "png"
+    return load_gif_frames(os.path.join(outputs_dir, rel), size), "gif"
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--outputs-dir", required=True)
     ap.add_argument("--source-dir", required=True)
+    ap.add_argument("--mask-dir", default=None,
+                    help="per-frame source-subject mask PNGs (e.g. data/case-1/man.mask)")
+    ap.add_argument("--target-images-dir", default=None,
+                    help="target driving RGB frames (e.g. data/case-1/target_images) "
+                         "for posedist_vs_target")
     ap.add_argument("--prompt", default="a girl is dancing")
     ap.add_argument("--teacher", default=TEACHER_GIF, help="teacher gif (rel. outputs-dir)")
     ap.add_argument("--timings", default=None, help="optional JSON {method: seconds}")
@@ -203,37 +312,68 @@ def main():
     lpips_net = make_lpips(device)
     clip = make_clip(device)
     pose = make_pose()
+    seg = make_seg()
     timings = json.load(open(args.timings)) if args.timings else {}
 
     source = load_source_frames(args.source_dir)
-    teacher = load_gif_frames(os.path.join(args.outputs_dir, args.teacher))
+    teacher, tsrc = load_frames(args.outputs_dir, args.teacher)
+    print(f"[metrics] teacher frames from: {tsrc}")
     teacher_lms = pose_landmarks(pose, teacher) if pose is not None else None
+    teacher_mask = subject_mask_seg(seg, teacher)
+    src_mask = load_mask_pngs(args.mask_dir) if args.mask_dir else None
+
+    target_lms = None
+    if args.target_images_dir and pose is not None:
+        target_frames = load_source_frames(args.target_images_dir)
+        target_lms = pose_landmarks(pose, target_frames)
+        floor = pose_distance(pose, teacher, target_lms)     # teacher-vs-target floor
+        print(f"[metrics] posedist_vs_target floor (teacher) = {fmt(floor)}")
 
     rows = []
     for name, rel, nfe in REGISTRY:
-        path = os.path.join(args.outputs_dir, rel)
-        if not os.path.exists(path):
+        if not os.path.exists(os.path.join(args.outputs_dir, rel)):
             print(f"[metrics] SKIP (missing): {rel}")
             continue
-        frames = load_gif_frames(path)
+        frames, fsrc = load_frames(args.outputs_dir, rel)
         sharp = laplacian_sharpness(frames)
-        pd = pose_distance(pose, frames, teacher_lms)
-        lp_t = lpips_score(lpips_net, frames, teacher, device)
-        lp_s = lpips_score(lpips_net, frames, source, device)
+        pd_t = pose_distance(pose, frames, teacher_lms)
+        pd_tg = pose_distance(pose, frames, target_lms)
+        lp_s = lpips_score(lpips_net, frames, source, device)          # global (footnote)
+        lp_t = lpips_score(lpips_net, frames, teacher, device)         # global (confounded)
         cs = clip_sim(clip, args.prompt, frames, device)
-        wc = timings.get(name)
-        rows.append((name, sharp, pd, lp_s, cs, nfe, wc, lp_t))
-        print(f"[metrics] {name}: Sharpness={fmt(sharp, 5)} PoseDist={fmt(pd)} "
-              f"LPIPS-source={fmt(lp_s)} CLIP={fmt(cs)} NFE={nfe}")
 
-    # Primary axes: Sharpness (no-ref quality), PoseDist-vs-teacher (edit fidelity,
-    # skeleton-only so not confounded). LPIPS-vs-teacher kept only as a footnote.
-    header = ("| Method | Sharpness ↑ | PoseDist-vs-teacher ↓ | LPIPS-vs-source ↓ | CLIP-sim ↑ | NFE | Wall-clock (s) ↓ | LPIPS-vs-teacher (confounded) |\n"
-              "|---|---|---|---|---|---|---|---|\n")
-    lines = [header]
-    for name, sharp, pd, lp_s, cs, nfe, wc, lp_t in rows:
-        lines.append(f"| {name} | {fmt(sharp, 5)} | {fmt(pd)} | {fmt(lp_s)} | {fmt(cs)} | "
-                     f"{nfe if nfe is not None else '-'} | {fmt(wc, 1)} | {fmt(lp_t)} |\n")
+        # region-split metrics (need seg + lpips + source mask)
+        bg_lp = subj_lp = bg_ss = subj_ss = None
+        if seg is not None and lpips_net is not None:
+            out_mask = subject_mask_seg(seg, frames)
+            if src_mask is not None:
+                bg = bg_region(src_mask, out_mask)
+                bg_lp = region_weighted_mean(lpips_map(lpips_net, frames, source, device), bg)
+                bg_ss = region_weighted_mean(ssim_map(frames, source), bg)
+            if teacher_mask is not None:
+                subj = subject_region(out_mask, teacher_mask)
+                subj_lp = region_weighted_mean(lpips_map(lpips_net, frames, teacher, device), subj)
+                subj_ss = region_weighted_mean(ssim_map(frames, teacher), subj)
+
+        wc = timings.get(name)
+        rows.append(dict(name=name, nfe=nfe, sharp=sharp, pd_t=pd_t, pd_tg=pd_tg,
+                         bg_lp=bg_lp, subj_lp=subj_lp, bg_ss=bg_ss, subj_ss=subj_ss,
+                         lp_s=lp_s, lp_t=lp_t, cs=cs, wc=wc, fsrc=fsrc))
+        print(f"[metrics] {name} [{fsrc}]: Sharp={fmt(sharp,5)} PoseTgt={fmt(pd_tg)} "
+              f"bgLPIPS={fmt(bg_lp)} subjLPIPS={fmt(subj_lp)} NFE={nfe}")
+
+    # Primary: Sharpness, PoseDist-vs-target, bg_LPIPS-vs-source, subj_LPIPS-vs-teacher.
+    cols = ("| Method | NFE | Sharpness ↑ | PoseDist-vs-target ↓ | bg LPIPS-src ↓ | "
+            "subj LPIPS-teacher ↓ | bg SSIM ↑ | subj SSIM ↑ | PoseDist-vs-teacher ↓ | "
+            "LPIPS-src (global) | frames |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|\n")
+    lines = [cols]
+    for r in rows:
+        lines.append(
+            f"| {r['name']} | {r['nfe'] if r['nfe'] is not None else '-'} | "
+            f"{fmt(r['sharp'],5)} | {fmt(r['pd_tg'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
+            f"{fmt(r['bg_ss'])} | {fmt(r['subj_ss'])} | {fmt(r['pd_t'])} | {fmt(r['lp_s'])} | "
+            f"{r['fsrc']} |\n")
     table = "".join(lines)
     print("\n" + table)
 
@@ -241,7 +381,14 @@ def main():
         with open(args.out, "w") as f:
             f.write("# Ablation metrics (case-1)\n\n")
             f.write(f"Prompt: `{args.prompt}` · teacher: `{args.teacher}`\n\n")
+            f.write("Primary axes: **Sharpness** (no-ref), **PoseDist-vs-target** (fidelity to "
+                    "the driving pose), **bg LPIPS-src** (scene preservation, ~0 expected), "
+                    "**subj LPIPS-teacher** (subject appearance vs teacher, same pose). "
+                    "`LPIPS-src (global)` is confounded by the intended pose change + background "
+                    "dominance + colour shift — kept for continuity only. `frames` = whether "
+                    "clean PNGs or the quantised gif were used.\n\n")
             f.write(table)
+        print(f"[metrics] wrote {args.out}")
         print(f"[metrics] wrote {args.out}")
 
 
