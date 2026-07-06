@@ -305,7 +305,11 @@ def load_frames(outputs_dir, rel, size=512):
     if pngs:
         fr = []
         for p in pngs:
-            im = Image.open(p).convert("RGB").resize((size, size), Image.LANCZOS)
+            im = Image.open(p).convert("RGB")
+            w, h = im.size
+            if w >= 1.8 * h:                          # side-by-side source|edit -> right half
+                im = im.crop((w // 2, 0, w, h))
+            im = im.resize((size, size), Image.LANCZOS)
             fr.append(np.asarray(im, dtype=np.float32) / 255.0)
         return torch.from_numpy(np.stack(fr).transpose(0, 3, 1, 2)), "png"
     return load_gif_frames(os.path.join(outputs_dir, rel), size), "gif"
