@@ -99,6 +99,26 @@ def laplacian_sharpness(frames01):
     return float(lap.reshape(lap.shape[0], -1).var(axis=1).mean())
 
 
+def laplacian_sharpness_masked(frames01, mask):
+    """No-reference subject sharpness: variance of the Laplacian computed ONLY over
+    the subject-mask pixels, averaged over frames. Immune to both the pose
+    mismatch and the colour shift (no reference at all), so it isolates subject
+    blur — the axis reference-based subject metrics cannot measure cleanly here."""
+    if mask is None:
+        return None
+    x = frames01.numpy()
+    gray = 0.299 * x[:, 0] + 0.587 * x[:, 1] + 0.114 * x[:, 2]      # (N,H,W)
+    lap = (-4.0 * gray
+           + np.roll(gray, 1, 1) + np.roll(gray, -1, 1)
+           + np.roll(gray, 1, 2) + np.roll(gray, -1, 2))
+    m = mask.numpy()[:, 0] > 0.5                                     # (N,H,W) bool
+    vals = []
+    for i in range(len(lap)):
+        if m[i].sum() > 0:
+            vals.append(float(lap[i][m[i]].var()))
+    return float(np.mean(vals)) if vals else None
+
+
 def make_lpips(device):
     """LPIPS in spatial mode: net(a,b) returns a per-pixel (N,1,H,W) distance map.
     .mean() recovers the old global scalar; masking the map gives region metrics."""
@@ -343,9 +363,11 @@ def main():
         cs = clip_sim(clip, args.prompt, frames, device)
 
         # region-split metrics (need seg + lpips + source mask)
-        bg_lp = subj_lp = bg_ss = subj_ss = None
-        if seg is not None and lpips_net is not None:
+        bg_lp = subj_lp = bg_ss = subj_ss = subj_sharp = None
+        if seg is not None:
             out_mask = subject_mask_seg(seg, frames)
+            subj_sharp = laplacian_sharpness_masked(frames, out_mask)   # no-ref subject quality
+        if seg is not None and lpips_net is not None:
             if src_mask is not None:
                 bg = bg_region(src_mask, out_mask)
                 bg_lp = region_weighted_mean(lpips_map(lpips_net, frames, source, device), bg)
@@ -356,24 +378,28 @@ def main():
                 subj_ss = region_weighted_mean(ssim_map(frames, teacher), subj)
 
         wc = timings.get(name)
-        rows.append(dict(name=name, nfe=nfe, sharp=sharp, pd_t=pd_t, pd_tg=pd_tg,
-                         bg_lp=bg_lp, subj_lp=subj_lp, bg_ss=bg_ss, subj_ss=subj_ss,
-                         lp_s=lp_s, lp_t=lp_t, cs=cs, wc=wc, fsrc=fsrc))
-        print(f"[metrics] {name} [{fsrc}]: Sharp={fmt(sharp,5)} PoseTgt={fmt(pd_tg)} "
-              f"bgLPIPS={fmt(bg_lp)} subjLPIPS={fmt(subj_lp)} NFE={nfe}")
+        rows.append(dict(name=name, nfe=nfe, sharp=sharp, subj_sharp=subj_sharp,
+                         pd_t=pd_t, pd_tg=pd_tg, bg_lp=bg_lp, subj_lp=subj_lp,
+                         bg_ss=bg_ss, subj_ss=subj_ss, lp_s=lp_s, lp_t=lp_t, cs=cs,
+                         wc=wc, fsrc=fsrc))
+        print(f"[metrics] {name} [{fsrc}]: Sharp={fmt(sharp,5)} subjSharp={fmt(subj_sharp,5)} "
+              f"PoseTgt={fmt(pd_tg)} bgSSIM={fmt(bg_ss)} NFE={nfe}")
 
-    # Primary: Sharpness, PoseDist-vs-target, bg_LPIPS-vs-source, subj_LPIPS-vs-teacher.
-    cols = ("| Method | NFE | Sharpness ↑ | PoseDist-vs-target ↓ | bg LPIPS-src ↓ | "
-            "subj LPIPS-teacher ↓ | bg SSIM ↑ | subj SSIM ↑ | PoseDist-vs-teacher ↓ | "
-            "LPIPS-src (global) | frames |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|\n")
+    # Primary (all no-reference or structural, so unconfounded): full-frame Sharpness,
+    # SUBJECT-region Sharpness (isolates subject blur), bg SSIM (scene preserved),
+    # PoseDist-vs-target (fidelity). Reference-based subject LPIPS/SSIM kept but
+    # confounded (residual pose mismatch + colour shift); global LPIPS for continuity.
+    cols = ("| Method | NFE | Sharpness ↑ | **subj Sharpness ↑** | bg SSIM ↑ | "
+            "PoseDist-vs-target ↓ | bg LPIPS-src ↓ | subj LPIPS-teacher ↓ (conf.) | "
+            "subj SSIM ↑ (conf.) | LPIPS-src global (conf.) | frames |\n"
+            "|---|---|---|---|---|---|---|---|---|---|\n")
     lines = [cols]
     for r in rows:
         lines.append(
             f"| {r['name']} | {r['nfe'] if r['nfe'] is not None else '-'} | "
-            f"{fmt(r['sharp'],5)} | {fmt(r['pd_tg'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
-            f"{fmt(r['bg_ss'])} | {fmt(r['subj_ss'])} | {fmt(r['pd_t'])} | {fmt(r['lp_s'])} | "
-            f"{r['fsrc']} |\n")
+            f"{fmt(r['sharp'],5)} | {fmt(r['subj_sharp'],5)} | {fmt(r['bg_ss'])} | "
+            f"{fmt(r['pd_tg'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
+            f"{fmt(r['subj_ss'])} | {fmt(r['lp_s'])} | {r['fsrc']} |\n")
     table = "".join(lines)
     print("\n" + table)
 

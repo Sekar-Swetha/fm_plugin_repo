@@ -11,6 +11,7 @@ from metrics import (  # noqa: E402
     align_len,
     bg_region,
     fmt,
+    laplacian_sharpness_masked,
     load_frames,
     load_gif_frames,
     region_weighted_mean,
@@ -129,3 +130,21 @@ def test_load_frames_falls_back_to_gif(tmp_path):
     _write_gif(gif, 64, 64, (0, 0, 255), (0, 0, 255))
     frames, src = load_frames(str(tmp_path), "solo.gif", size=32)
     assert src == "gif" and frames[:, 2].mean() > 0.8
+
+
+def test_masked_sharpness_higher_for_textured_region():
+    # sharp checkerboard vs flat, same mask -> checkerboard scores much higher
+    H = 16
+    flat = torch.full((1, 3, H, H), 0.5)
+    board = torch.zeros(1, 3, H, H)
+    board[..., ::2, ::2] = 1.0
+    board[..., 1::2, 1::2] = 1.0
+    mask = torch.ones(1, 1, H, H)
+    s_flat = laplacian_sharpness_masked(flat, mask)
+    s_board = laplacian_sharpness_masked(board, mask)
+    assert s_board > s_flat
+
+
+def test_masked_sharpness_none_without_mask():
+    x = torch.rand(1, 3, 8, 8)
+    assert laplacian_sharpness_masked(x, None) is None
