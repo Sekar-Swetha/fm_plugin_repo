@@ -121,6 +121,46 @@ def lpips_score(net, a01, b01, device):
     return float(d.mean().item())
 
 
+def make_pose():
+    """MediaPipe Pose (legacy solutions). None if mediapipe absent."""
+    try:
+        import mediapipe as mp
+    except ImportError:
+        print("[metrics] mediapipe not installed — pose-distance column blank.")
+        return None
+    return mp.solutions.pose.Pose(static_image_mode=True, model_complexity=1)
+
+
+def pose_landmarks(pose, frames01):
+    """Per-frame (33,2) normalized landmarks, or None where no person detected."""
+    out = []
+    for f in frames01:
+        img = (f.permute(1, 2, 0).numpy() * 255).astype(np.uint8)   # HWC RGB uint8
+        res = pose.process(img)
+        if res.pose_landmarks:
+            out.append(np.array([[p.x, p.y] for p in res.pose_landmarks.landmark],
+                                dtype=np.float32))
+        else:
+            out.append(None)
+    return out
+
+
+def pose_distance(pose, frames01, ref_lms):
+    """Mean per-joint L2 (normalized coords) between output pose and the reference
+    (teacher) pose, averaged over frames with a detection in both. Lower = the
+    output reproduces the target pose. Skeleton-only, so immune to colour/blur."""
+    if pose is None or ref_lms is None:
+        return None
+    out_lms = pose_landmarks(pose, frames01)
+    ds = []
+    for a, b in zip(out_lms, ref_lms):
+        if a is None or b is None:
+            continue
+        n = min(len(a), len(b))
+        ds.append(float(np.linalg.norm(a[:n] - b[:n], axis=1).mean()))
+    return float(np.mean(ds)) if ds else None
+
+
 def make_clip(device):
     from transformers import CLIPModel, CLIPProcessor
     model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device).eval()
@@ -162,10 +202,12 @@ def main():
 
     lpips_net = make_lpips(device)
     clip = make_clip(device)
+    pose = make_pose()
     timings = json.load(open(args.timings)) if args.timings else {}
 
     source = load_source_frames(args.source_dir)
     teacher = load_gif_frames(os.path.join(args.outputs_dir, args.teacher))
+    teacher_lms = pose_landmarks(pose, teacher) if pose is not None else None
 
     rows = []
     for name, rel, nfe in REGISTRY:
@@ -175,21 +217,22 @@ def main():
             continue
         frames = load_gif_frames(path)
         sharp = laplacian_sharpness(frames)
+        pd = pose_distance(pose, frames, teacher_lms)
         lp_t = lpips_score(lpips_net, frames, teacher, device)
         lp_s = lpips_score(lpips_net, frames, source, device)
         cs = clip_sim(clip, args.prompt, frames, device)
         wc = timings.get(name)
-        rows.append((name, sharp, lp_t, lp_s, cs, nfe, wc))
-        print(f"[metrics] {name}: Sharpness={fmt(sharp, 5)} LPIPS-teacher={fmt(lp_t)} "
+        rows.append((name, sharp, pd, lp_s, cs, nfe, wc, lp_t))
+        print(f"[metrics] {name}: Sharpness={fmt(sharp, 5)} PoseDist={fmt(pd)} "
               f"LPIPS-source={fmt(lp_s)} CLIP={fmt(cs)} NFE={nfe}")
 
-    # Sharpness (no-ref) is the primary quality axis; LPIPS-vs-teacher is confounded
-    # by pose/colour differences between methods and is kept only as a footnote.
-    header = ("| Method | Sharpness ↑ | LPIPS-vs-source ↓ | CLIP-sim ↑ | NFE | Wall-clock (s) ↓ | LPIPS-vs-teacher (confounded) |\n"
-              "|---|---|---|---|---|---|---|\n")
+    # Primary axes: Sharpness (no-ref quality), PoseDist-vs-teacher (edit fidelity,
+    # skeleton-only so not confounded). LPIPS-vs-teacher kept only as a footnote.
+    header = ("| Method | Sharpness ↑ | PoseDist-vs-teacher ↓ | LPIPS-vs-source ↓ | CLIP-sim ↑ | NFE | Wall-clock (s) ↓ | LPIPS-vs-teacher (confounded) |\n"
+              "|---|---|---|---|---|---|---|---|\n")
     lines = [header]
-    for name, sharp, lp_t, lp_s, cs, nfe, wc in rows:
-        lines.append(f"| {name} | {fmt(sharp, 5)} | {fmt(lp_s)} | {fmt(cs)} | "
+    for name, sharp, pd, lp_s, cs, nfe, wc, lp_t in rows:
+        lines.append(f"| {name} | {fmt(sharp, 5)} | {fmt(pd)} | {fmt(lp_s)} | {fmt(cs)} | "
                      f"{nfe if nfe is not None else '-'} | {fmt(wc, 1)} | {fmt(lp_t)} |\n")
     table = "".join(lines)
     print("\n" + table)
