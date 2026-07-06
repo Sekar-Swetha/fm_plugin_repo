@@ -1,0 +1,73 @@
+{
+  "num_frames": 8,
+  "frames_with_pose": 8,
+  "per_keypoint_detection_rate": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    0.75,
+    1.0,
+    1.0,
+    0.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "mean_visibility": 0.8861336633563042,
+  "per_frame": [
+    {
+      "frame": "0000",
+      "n_detected": 16,
+      "mean_visibility": 0.9020799398422241
+    },
+    {
+      "frame": "0001",
+      "n_detected": 16,
+      "mean_visibility": 0.9033632874488831
+    },
+    {
+      "frame": "0002",
+      "n_detected": 17,
+      "mean_visibility": 0.872687041759491
+    },
+    {
+      "frame": "0003",
+      "n_detected": 17,
+      "mean_visibility": 0.8771691918373108
+    },
+    {
+      "frame": "0004",
+      "n_detected": 17,
+      "mean_visibility": 0.8805637359619141
+    },
+    {
+      "frame": "0005",
+      "n_detected": 17,
+      "mean_visibility": 0.8839299082756042
+    },
+    {
+      "frame": "0006",
+      "n_detected": 17,
+      "mean_visibility": 0.8837695717811584
+    },
+    {
+      "frame": "0007",
+      "n_detected": 17,
+      "mean_visibility": 0.8855066299438477
+    }
+  ],
+  "vs_openpose_ref_l1": {
+    "mean": 2.7291064262390137,
+    "max": 3.0499916076660156,
+    "min": 2.0173301696777344,
+    "frames_compared": 8
+  }
+}

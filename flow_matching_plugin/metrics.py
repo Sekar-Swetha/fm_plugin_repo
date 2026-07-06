@@ -83,6 +83,22 @@ def align_len(a: torch.Tensor, b: torch.Tensor):
     return a[:n], b[:n]
 
 
+def laplacian_sharpness(frames01):
+    """No-reference sharpness proxy: mean over frames of Var(Laplacian(gray)).
+
+    Higher = sharper (crisp edges have large 2nd derivatives; blur washes them
+    out). Unlike LPIPS-vs-teacher it needs no matched reference, so it is immune
+    to the pose/colour differences between methods and measures blur directly.
+    """
+    x = frames01.numpy()                                  # (N,3,H,W) in [0,1]
+    gray = 0.299 * x[:, 0] + 0.587 * x[:, 1] + 0.114 * x[:, 2]   # (N,H,W)
+    # 4-neighbour Laplacian via rolls (reflect-ish; edges negligible at 512px)
+    lap = (-4.0 * gray
+           + np.roll(gray, 1, 1) + np.roll(gray, -1, 1)
+           + np.roll(gray, 1, 2) + np.roll(gray, -1, 2))
+    return float(lap.reshape(lap.shape[0], -1).var(axis=1).mean())
+
+
 def make_lpips(device):
     try:
         import lpips
@@ -158,20 +174,23 @@ def main():
             print(f"[metrics] SKIP (missing): {rel}")
             continue
         frames = load_gif_frames(path)
+        sharp = laplacian_sharpness(frames)
         lp_t = lpips_score(lpips_net, frames, teacher, device)
         lp_s = lpips_score(lpips_net, frames, source, device)
         cs = clip_sim(clip, args.prompt, frames, device)
         wc = timings.get(name)
-        rows.append((name, lp_t, lp_s, cs, nfe, wc))
-        print(f"[metrics] {name}: LPIPS-teacher={fmt(lp_t)} "
+        rows.append((name, sharp, lp_t, lp_s, cs, nfe, wc))
+        print(f"[metrics] {name}: Sharpness={fmt(sharp, 5)} LPIPS-teacher={fmt(lp_t)} "
               f"LPIPS-source={fmt(lp_s)} CLIP={fmt(cs)} NFE={nfe}")
 
-    header = ("| Method | LPIPS-vs-teacher ↓ | LPIPS-vs-source ↓ | CLIP-sim ↑ | NFE | Wall-clock (s) ↓ |\n"
-              "|---|---|---|---|---|---|\n")
+    # Sharpness (no-ref) is the primary quality axis; LPIPS-vs-teacher is confounded
+    # by pose/colour differences between methods and is kept only as a footnote.
+    header = ("| Method | Sharpness ↑ | LPIPS-vs-source ↓ | CLIP-sim ↑ | NFE | Wall-clock (s) ↓ | LPIPS-vs-teacher (confounded) |\n"
+              "|---|---|---|---|---|---|---|\n")
     lines = [header]
-    for name, lp_t, lp_s, cs, nfe, wc in rows:
-        lines.append(f"| {name} | {fmt(lp_t)} | {fmt(lp_s)} | {fmt(cs)} | "
-                     f"{nfe if nfe is not None else '-'} | {fmt(wc, 1)} |\n")
+    for name, sharp, lp_t, lp_s, cs, nfe, wc in rows:
+        lines.append(f"| {name} | {fmt(sharp, 5)} | {fmt(lp_s)} | {fmt(cs)} | "
+                     f"{nfe if nfe is not None else '-'} | {fmt(wc, 1)} | {fmt(lp_t)} |\n")
     table = "".join(lines)
     print("\n" + table)
 
