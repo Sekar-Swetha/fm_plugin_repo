@@ -237,18 +237,22 @@ refresh pending, see below). **Only no-reference / structural axes are trusted**
 (see the metrics-design note) — reference-based appearance metrics are confounded
 in one-shot motion editing and are footnoted.
 
-| Method | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-vs-target ↓ |
-|---|---|---|---|---|---|
-| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 |
-| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.0146 | 0.886 | **0.040** |
-| + A/B naive flow | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 |
-| + A/B naive flow (50-step ODE) | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** |
-| DPM-Solver++ | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 |
-| **DPM-Solver++** | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 |
-| C3 consistency | 1 | 0.0013 | 0.0102 | 0.896 | 0.177 |
-| C3 consistency | 2 | 0.0044 | 0.0383 | 0.884 | 0.173 |
-| C3 consistency | 4 | 0.0102 | 0.0877 | 0.850 | 0.171 |
-| **C3 consistency** | **6** | **0.0142** | 0.1206 | 0.816 | 0.172 |
+C3 rows are from **lossless PNG frames** (Phase 2); baseline/flow/DPM from gifs
+(`frames` col in `metrics_table.md`). Lossless ≈ gif — same ranking, absolutes a
+touch lower (dithering removed), so the story is quantisation-independent.
+
+| Method | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-vs-target ↓ | frames |
+|---|---|---|---|---|---|---|
+| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 | gif |
+| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.0146 | 0.886 | **0.040** | gif |
+| + A/B naive flow | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
+| + A/B naive flow (50-step ODE) | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
+| DPM-Solver++ | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
+| **DPM-Solver++** | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 | gif |
+| C3 consistency | 1 | 0.0007 | 0.0057 | 0.902 | 0.176 | png |
+| C3 consistency | 2 | 0.0038 | 0.0331 | 0.889 | 0.173 | png |
+| C3 consistency | 4 | 0.0100 | 0.0859 | 0.852 | 0.171 | png |
+| **C3 consistency** | **6** | **0.0145** | 0.1228 | 0.817 | 0.173 | png |
 
 **Headline finding — quality and fidelity decouple across NFE:**
 - **Sharpness scales with steps** — full-frame 0.0013→0.0142 and subject-region
@@ -285,9 +289,10 @@ Sharpness for cross-method absolutes. CLIP-sim (~0.26–0.28) is saturated; glob
 LPIPS-vs-source and subject LPIPS/SSIM-vs-teacher are retained in
 `fm_outputs/metrics_table.md` only for continuity, flagged `(conf.)`.
 
-**Still pending:** (1) re-run DPM/C3/teacher with `save_frames` and recompute from
-LOSSLESS PNGs — gif dithering adds high-freq noise that inflates *both* Laplacian
-columns (uniformly, so the ranking holds; absolutes tighten). (2) Wall-clock per
+**Lossless status:** C3 recomputed from lossless PNGs (done, above). The DPM
+main-path `save_frames` dump captured the reconstruction branch (≈ source) rather
+than the edit, so DPM keeps its gif number (it's the safety-net result, not the
+headline — not worth chasing the branch quirk). **Still pending:** wall-clock per
 run (NFE is the reliable speed axis meanwhile). _Metrics update: 2026-07-06._
 
 ---
