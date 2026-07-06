@@ -230,20 +230,49 @@ DDIM-50 + null-text baseline (~12–25× fewer steps, no null-text optimisation)
 
 ---
 
-## 7. Ablation table (to finalise with metrics)
+## 7. Ablation table (measured, case-1)
 
-| Config | Pose | Inversion | Sampler | NFE | Sharp? | Notes |
-|---|---|---|---|---|---|---|
-| Baseline | OpenPose | DDIM-50 + null-text | DDPM-50 | 50 | ✔ | reference |
-| + MediaPipe | **MediaPipe** | DDIM-50 + null-text | DDPM-50 | 50 | ✔ | Goal 1 |
-| + A/B flow | MediaPipe | flow-inv | CFM-OT ODE | 8–50 | ✘ (soft) | analyzed negative |
-| + DPM-Solver++ | MediaPipe | DDIM-inv | **PF-ODE** | 15 | ✔ | prior retained |
-| + C3 (4-step) | MediaPipe | inverted src | **consistency** | **4** | ✔ | headline |
-| + C3 (2-step) | MediaPipe | inverted src | consistency | 2 | ~ | near-sharp |
-| + C3 (1-step) | MediaPipe | inverted src | consistency | 1 | ✘ (soft) | undershoot |
+Computed by `flow_matching_plugin/metrics.py` (2026-07-06). Primary axes:
+**Sharpness** (no-reference Laplacian variance ↑ = sharper) and **PoseDist**
+(MediaPipe per-joint L2 to the teacher pose ↓ = edit fidelity; skeleton-only, so
+immune to colour/blur, unlike LPIPS-vs-teacher). `~0.157` is the
+same-pose-different-run floor (teacher itself = 0.000).
 
-**Metrics still to compute** (`flow_matching_plugin/metrics.py`, to write):
-Recon-LPIPS / LPIPS-vs-teacher ↓, CLIP-sim ↑, NFE, wall-clock ↓ per row.
+| Method | NFE | Sharpness ↑ | PoseDist ↓ | LPIPS-vs-source ↓ |
+|---|---|---|---|---|
+| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.158 | 0.348 |
+| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.000 | 0.393 |
+| + A/B naive flow | 50 | **0.0122** | **0.171** | 0.392 |
+| + A/B naive flow (50-step ODE) | 50 | 0.0122 | **0.191** | 0.404 |
+| DPM-Solver++ | 20 | 0.0142 | 0.160 | 0.434 |
+| **DPM-Solver++** | **15** | **0.0144** | 0.161 | 0.441 |
+| C3 consistency | 1 | 0.0013 | 0.163 | 0.335 |
+| C3 consistency | 2 | 0.0044 | 0.160 | 0.326 |
+| C3 consistency | 4 | 0.0102 | 0.157 | 0.364 |
+| **C3 consistency** | **6** | **0.0142** | 0.159 | 0.435 |
+
+**Headline finding — the two axes decouple:**
+- **Edit fidelity (PoseDist) is flat ~0.157–0.163 across all DPM and C3 rows,
+  including NFE-1** — the target pose is achieved at *every* step count; MediaPipe
+  reads the correct pose even off the blurry 1-step output.
+- **Sharpness is the only axis that scales with steps** (0.0013 → 0.0142 over C3
+  1→6), reaching DPM/teacher level (0.0142 ≈ 0.0144) at **6 NFE**.
+- ⇒ C3 is a **sharpness↔speed dial at fixed edit fidelity**: pick NFE by sharpness
+  budget without losing the edit.
+
+**Naive flow loses on both axes:** softer than baseline (0.0122 < 0.0133) *and*
+worst pose fidelity (0.171–0.191, well above the 0.157 floor — the ghosting
+subject drifts off-pose). Double-confirmed negative.
+
+**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at
+baseline-level pose fidelity, **15 NFE vs 50** (~3× faster, sharper).
+
+**Caveats (write-up honesty):** PoseDist range is narrow — read it as "at floor =
+pose correct" vs "above floor = drift", not fine-grained. Laplacian sharpness also
+reflects contrast, so DPM/C3-6's saturation inflates it slightly (ranking sound,
+absolutes with the visuals). CLIP-sim (~0.26–0.28) is saturated and
+LPIPS-vs-teacher is confounded by pose/colour — both footnoted, not led with.
+Wall-clock still to log (time each run; NFE is the reliable speed axis meanwhile).
 
 ---
 
