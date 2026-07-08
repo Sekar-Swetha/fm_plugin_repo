@@ -15,6 +15,7 @@ from metrics import (  # noqa: E402
     load_frames,
     load_gif_frames,
     load_walltime,
+    normalized_joint_distance,
     region_weighted_mean,
     ssim_map,
     subject_region,
@@ -162,3 +163,28 @@ def test_load_walltime_reads_frames_json(tmp_path):
 
 def test_load_walltime_missing_is_none(tmp_path):
     assert load_walltime(str(tmp_path), "none.gif") is None
+
+
+def test_normalized_posedist_translation_invariant():
+    import numpy as np
+    rng = np.random.default_rng(0)
+    a = rng.random((33, 2)).astype(np.float32)
+    b = a + np.array([0.2, -0.1], dtype=np.float32)   # pure translation -> same pose
+    assert normalized_joint_distance(a, b) < 1e-5
+
+
+def test_normalized_posedist_scale_invariant():
+    import numpy as np
+    rng = np.random.default_rng(1)
+    a = rng.random((33, 2)).astype(np.float32)
+    b = a * 1.7                                        # pure scale -> same pose
+    assert normalized_joint_distance(a, b) < 1e-5
+
+
+def test_normalized_posedist_detects_pose_change():
+    import numpy as np
+    rng = np.random.default_rng(2)
+    a = rng.random((33, 2)).astype(np.float32)
+    c = a.copy()
+    c[7] += np.array([0.4, 0.4], dtype=np.float32)     # move a non-anchor joint (not hip/shoulder)
+    assert normalized_joint_distance(a, c) > 1e-2

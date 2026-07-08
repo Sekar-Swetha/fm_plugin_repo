@@ -269,6 +269,41 @@ def pose_distance(pose, frames01, ref_lms):
     return float(np.mean(ds)) if ds else None
 
 
+# BlazePose-33 indices for pose normalization
+_L_HIP, _R_HIP, _L_SHO, _R_SHO = 23, 24, 11, 12
+
+
+def normalize_pose(lm):
+    """Centre on the hip-midpoint, scale by torso length (hip-mid to shoulder-mid).
+    Makes the comparison translation+scale invariant -> pure pose."""
+    hip = (lm[_L_HIP] + lm[_R_HIP]) / 2.0
+    sho = (lm[_L_SHO] + lm[_R_SHO]) / 2.0
+    torso = np.linalg.norm(sho - hip) + 1e-6
+    return (lm - hip) / torso
+
+
+def normalized_joint_distance(a, b):
+    """Per-joint L2 between two (>=25, 2) landmark arrays after centre+scale norm."""
+    n = min(len(a), len(b))
+    return float(np.linalg.norm(normalize_pose(a[:n]) - normalize_pose(b[:n]), axis=1).mean())
+
+
+def pose_distance_normalized(pose, frames01, ref_lms):
+    """COARSE pose-invariant distance: per-joint L2 after centre+scale normalization,
+    removing the global position/scale that dominates raw PoseDist. NOTE: still
+    convention-biased toward the MediaPipe-driven reference; ~0.25 clustering must
+    NOT be read as 'all methods equally pose-faithful' (see FULL_PROGRESS §7)."""
+    if pose is None or ref_lms is None:
+        return None
+    out_lms = pose_landmarks(pose, frames01)
+    ds = []
+    for a, b in zip(out_lms, ref_lms):
+        if a is None or b is None:
+            continue
+        ds.append(normalized_joint_distance(a, b))
+    return float(np.mean(ds)) if ds else None
+
+
 def make_clip(device):
     from transformers import CLIPModel, CLIPProcessor
     model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device).eval()
@@ -376,6 +411,7 @@ def main():
         sharp = laplacian_sharpness(frames)
         pd_t = pose_distance(pose, frames, teacher_lms)
         pd_tg = pose_distance(pose, frames, target_lms)
+        pd_tgn = pose_distance_normalized(pose, frames, target_lms)   # coarse, pose-invariant
         lp_s = lpips_score(lpips_net, frames, source, device)          # global (footnote)
         lp_t = lpips_score(lpips_net, frames, teacher, device)         # global (confounded)
         cs = clip_sim(clip, args.prompt, frames, device)
@@ -397,26 +433,27 @@ def main():
 
         wc = timings.get(name, load_walltime(args.outputs_dir, rel))
         rows.append(dict(name=name, nfe=nfe, sharp=sharp, subj_sharp=subj_sharp,
-                         pd_t=pd_t, pd_tg=pd_tg, bg_lp=bg_lp, subj_lp=subj_lp,
+                         pd_t=pd_t, pd_tg=pd_tg, pd_tgn=pd_tgn, bg_lp=bg_lp, subj_lp=subj_lp,
                          bg_ss=bg_ss, subj_ss=subj_ss, lp_s=lp_s, lp_t=lp_t, cs=cs,
                          wc=wc, fsrc=fsrc))
         print(f"[metrics] {name} [{fsrc}]: Sharp={fmt(sharp,5)} subjSharp={fmt(subj_sharp,5)} "
-              f"PoseTgt={fmt(pd_tg)} bgSSIM={fmt(bg_ss)} NFE={nfe}")
+              f"PoseTgt={fmt(pd_tg)} PoseTgtNorm={fmt(pd_tgn)} bgSSIM={fmt(bg_ss)} NFE={nfe}")
 
     # Primary (all no-reference or structural, so unconfounded): full-frame Sharpness,
-    # SUBJECT-region Sharpness (isolates subject blur), bg SSIM (scene preserved),
-    # PoseDist-vs-target (fidelity). Reference-based subject LPIPS/SSIM kept but
-    # confounded (residual pose mismatch + colour shift); global LPIPS for continuity.
+    # SUBJECT-region Sharpness (isolates subject blur), bg SSIM (scene preserved).
+    # PoseDist-vs-target is raw (position/scale-sensitive); PoseDist-norm is a COARSE
+    # pose-invariant variant (see FULL_PROGRESS §7 — convention-biased, not fine).
+    # Reference-based subject LPIPS/SSIM + global LPIPS kept but confounded.
     cols = ("| Method | NFE | Wall-clock (s) ↓ | Sharpness ↑ | **subj Sharpness ↑** | bg SSIM ↑ | "
-            "PoseDist-vs-target ↓ | bg LPIPS-src ↓ | subj LPIPS-teacher ↓ (conf.) | "
-            "subj SSIM ↑ (conf.) | LPIPS-src global (conf.) | frames |\n"
-            "|---|---|---|---|---|---|---|---|---|---|---|\n")
+            "PoseDist-tgt (raw) ↓ | PoseDist-tgt (norm, coarse) ↓ | bg LPIPS-src ↓ | "
+            "subj LPIPS-teacher ↓ (conf.) | subj SSIM ↑ (conf.) | LPIPS-src global (conf.) | frames |\n"
+            "|---|---|---|---|---|---|---|---|---|---|---|---|\n")
     lines = [cols]
     for r in rows:
         lines.append(
             f"| {r['name']} | {r['nfe'] if r['nfe'] is not None else '-'} | {fmt(r['wc'],1)} | "
             f"{fmt(r['sharp'],5)} | {fmt(r['subj_sharp'],5)} | {fmt(r['bg_ss'])} | "
-            f"{fmt(r['pd_tg'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
+            f"{fmt(r['pd_tg'])} | {fmt(r['pd_tgn'])} | {fmt(r['bg_lp'])} | {fmt(r['subj_lp'])} | "
             f"{fmt(r['subj_ss'])} | {fmt(r['lp_s'])} | {r['fsrc']} |\n")
     table = "".join(lines)
     print("\n" + table)

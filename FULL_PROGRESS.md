@@ -1,6 +1,6 @@
 # MotionEditor × Flow Matching — Full Dissertation Progress
 
-_Last updated: 2026-07-01. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
+_Last updated: 2026-07-08. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
 _This is the authoritative, self-contained record: read only this file and you
 know the entire project — goal, theory, every experiment, why the flow baseline
 fails, the two fixes that work, the code, the results, and what's left._
@@ -232,43 +232,63 @@ DDIM-50 + null-text baseline (~12–25× fewer steps, no null-text optimisation)
 
 ## 7. Ablation table (measured, case-1)
 
-`flow_matching_plugin/metrics.py`, 2026-07-06 (read from gifs; lossless-frame
-refresh pending, see below). **Only no-reference / structural axes are trusted**
-(see the metrics-design note) — reference-based appearance metrics are confounded
-in one-shot motion editing and are footnoted.
+`flow_matching_plugin/metrics.py`, values from 2026-07-06 (C3 lossless PNG;
+baseline/flow/DPM gifs). **This revision (2026-07-08) changes conditioning-source
+labels and narrative only — every Sharpness / subj-Sharpness / bg-SSIM / PoseDist
+value is unchanged.**
 
-C3 rows are from **lossless PNG frames** (Phase 2); baseline/flow/DPM from gifs
-(`frames` col in `metrics_table.md`). Lossless ≈ gif — same ranking, absolutes a
-touch lower (dithering removed), so the story is quantisation-independent.
+**Conditioning provenance — SETTLED by byte-hash (`diag_conditioning.py`):**
+`target_condition/openposefull`, the skeleton every eval config reads, is
+**8/8 byte-identical to the original OpenPose backup** and **0/8 to the MediaPipe
+render** (`mp_target`). So the **sampler comparison below is uniformly OpenPose-
+conditioned.** MediaPipe (Goal 1) is a *separate* axis — validated on source frames
+(§5.1, `verify.py`) — and was **not** the pose source in the DPM/C3 experiments.
 
-| Method | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-vs-target ↓ | frames |
-|---|---|---|---|---|---|---|
-| Baseline (DDIM-50 + null-text) | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 | gif |
-| + MediaPipe (epsilon) = teacher | 50 | 0.0133 | 0.0146 | 0.886 | **0.040** | gif |
-| + A/B naive flow | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
-| + A/B naive flow (50-step ODE) | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
-| DPM-Solver++ | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
-| **DPM-Solver++** | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 | gif |
-| C3 consistency | 1 | 0.0007 | 0.0057 | 0.902 | 0.176 | png |
-| C3 consistency | 2 | 0.0038 | 0.0331 | 0.889 | 0.173 | png |
-| C3 consistency | 4 | 0.0100 | 0.0859 | 0.852 | 0.171 | png |
-| **C3 consistency** | **6** | **0.0145** | 0.1228 | 0.817 | 0.173 | png |
+### Sampler comparison (uniformly OpenPose conditioning)
+| Method | Cond. | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-tgt ↓ | frames |
+|---|---|---|---|---|---|---|---|
+| **Baseline epsilon (DDIM-50 + null-text) — reference** | OpenPose | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 | gif |
+| A/B naive flow — *cond. unverified (Task-2 note)* | ? | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
+| A/B naive flow (50-step ODE) — *cond. unverified* | ? | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
+| DPM-Solver++ | OpenPose | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
+| **DPM-Solver++** | OpenPose | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 | gif |
+| C3 consistency | OpenPose | 1 | 0.0007 | 0.0057 | 0.902 | 0.176 | png |
+| C3 consistency | OpenPose | 2 | 0.0038 | 0.0331 | 0.889 | 0.173 | png |
+| C3 consistency | OpenPose | 4 | 0.0100 | 0.0859 | 0.852 | 0.171 | png |
+| **C3 consistency** | OpenPose | **6** | **0.0145** | 0.1228 | 0.817 | 0.173 | png |
 
-**Headline finding — quality and fidelity decouple across NFE:**
-- **Sharpness scales with steps** — full-frame 0.0013→0.0142 and subject-region
-  0.010→0.121 over C3 1→6; C3-6 reaches DPM/teacher level (full 0.0142 ≈ 0.0144).
-- **Edit fidelity is achieved at *every* step count** — PoseDist-vs-target is flat
-  ~0.171–0.177 for all DPM/C3 rows including NFE-1 (teacher floor 0.040; every
-  *editing* method sits ~0.17 = a consistent, correct realisation of the driving
-  pose). So the target pose is hit even off the blurry 1-step output.
-- ⇒ C3 is a **sharpness↔speed dial at fixed edit fidelity**.
+### Goal-1 MediaPipe reference (NOT part of the sampler comparison)
+| Method | Cond. | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-tgt ↓ | frames |
+|---|---|---|---|---|---|---|---|
+| MediaPipe epsilon (DDIM-50) | MediaPipe | 50 | 0.0133 | 0.0146 | 0.886 | **0.040** | gif |
+
+> This MediaPipe row is the **Goal-1 reference** (MediaPipe-driven epsilon edit). It
+> is **NOT C3's teacher**, and it sits on a **different, MediaPipe-convention target**
+> — its low PoseDist (0.040) is *circular* (MediaPipe-driven output vs
+> MediaPipe-extracted target), not superior fidelity (see the PoseDist note).
+> **C3's distillation teacher is the OpenPose DPM-Solver++ trajectory**, not this row.
+
+**Headline finding — quality scales with NFE; pose fidelity is uniform across the OpenPose samplers:**
+- **Sharpness scales with steps** — full-frame 0.0007→0.0145 and subject-region
+  0.006→0.123 over C3 1→6; C3-6 reaches the OpenPose DPM/baseline sharpness level
+  (full 0.0145 ≈ 0.0144).
+- **PoseDist-vs-target is ~flat 0.171–0.176 across all OpenPose sampler rows**
+  (baseline, DPM, C3, incl. NFE-1) → no fidelity difference detectable across NFE.
+  **Caveat (settled):** this ~0.17 is *not* pure pose error — every OpenPose-driven
+  output carries the fixed **0.16 OpenPose-vs-MediaPipe target-skeleton x-offset**
+  (OpenPose target x≈0.55 vs the MediaPipe target x≈0.39 the metric compares
+  against). So PoseDist here is a **coarse consistency check**, not a fine ranking,
+  and the MediaPipe row's 0.040 is a convention artifact, not a fidelity floor.
+- ⇒ C3 is a **sharpness↔speed dial**; pose fidelity is uniform across the OpenPose samplers.
 
 **Naive flow loses on quality:** softest subject (subj Sharpness 0.0088, below every
 other row) and softer full-frame than baseline (0.0122 < 0.0133); its 50-step ODE
-variant also has the worst pose fidelity (0.196). The analyzed negative.
+variant also has the highest PoseDist (0.196). The analyzed negative. **Its
+conditioning source is unverified (Task-2 note) — do not compare its PoseDist to the
+OpenPose rows until settled.**
 
-**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at correct
-pose fidelity, **15 NFE vs 50**.
+**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at equal pose
+fidelity, **15 NFE vs 50** — both OpenPose-conditioned.
 
 **bg SSIM 0.82–0.90** everywhere confirms the **scene is structurally preserved**
 (the pipeline works); it dips slightly for the most-saturated rows (C3-6 = 0.816).
@@ -279,8 +299,8 @@ colour**, so LPIPS/SSIM-vs-teacher, LPIPS/SSIM-vs-source and global LPIPS all
 mis-rank (they put the blurriest C3-1/2 "best" and the sharp C3-6/DPM "worst"). The
 region split proved this: `bg_LPIPS` tracks the colour shift while `bg_SSIM` shows
 structure is fine, and `subject_LPIPS-vs-teacher` stays confounded because outputs
-are **not in the teacher's exact pose** (PoseDist-vs-target: teacher 0.040 vs
-editors ~0.17). We therefore lead with **no-reference** metrics: full-frame and
+are **not pixel-aligned to any reference** (pose + colour + the OpenPose-vs-MediaPipe
+target offset). We therefore lead with **no-reference** metrics: full-frame and
 **subject-region Laplacian sharpness** (subject one via the MediaPipe mask, immune
 to pose *and* colour) + structural **bg SSIM** + **PoseDist**. Caveat: Laplacian
 also reflects contrast, so subj-Sharpness *absolutes* for high-saturation C3-4/6
@@ -289,11 +309,23 @@ Sharpness for cross-method absolutes. CLIP-sim (~0.26–0.28) is saturated; glob
 LPIPS-vs-source and subject LPIPS/SSIM-vs-teacher are retained in
 `fm_outputs/metrics_table.md` only for continuity, flagged `(conf.)`.
 
+**PoseDist note (settled — `diag_posedist.py` + `diag_conditioning.py`):** raw
+PoseDist-vs-target compares **un-centred** MediaPipe landmarks against
+`MediaPipe(target_images)`. The MediaPipe row scores 0.040 because it is
+MediaPipe-driven onto its own convention (circular); OpenPose-driven rows score
+~0.17 because their subject sits ~0.16 right of the MediaPipe target — a
+**skeleton-position offset, not pose error**. Pose-normalized PoseDist (centre on
+hip-midpoint, scale by torso) is added as a **coarse** variant (Task 5); the raw
+column is retained. It stays **convention-biased toward the MediaPipe row**
+regardless of normalization, and ~0.25 clustering must **not** be read as "all
+methods equally pose-faithful".
+
 **Lossless status:** C3 recomputed from lossless PNGs (done, above). The DPM
 main-path `save_frames` dump captured the reconstruction branch (≈ source) rather
 than the edit, so DPM keeps its gif number (it's the safety-net result, not the
-headline — not worth chasing the branch quirk). **Still pending:** wall-clock per
-run (NFE is the reliable speed axis meanwhile). _Metrics update: 2026-07-06._
+headline — not worth chasing the branch quirk). **Still pending:** normalized-PoseDist
+recompute on the box (metrics.py ready); wall-clock per run (NFE is the reliable
+speed axis meanwhile). _Metric values from 2026-07-06; labels/narrative revised 2026-07-08._
 
 ---
 
@@ -312,12 +344,22 @@ works" — **done and exceeded**: DPM-Solver++ (sharp, 15 NFE) *and* C3 consiste
 
 ## 9. What's left
 
-1. **Metrics** — write `metrics.py`, fill §7 (LPIPS-vs-teacher, CLIP-sim, wall-clock).
-2. **Optional** — logit-normal t-sampling ablation for the naive-flow chapter;
-   more evaluation cases (case-2+).
-3. **Write-up** — MediaPipe (Goal 1) + the flow-quality arc (naive soft → diagnose
-   → PF-ODE retains prior → C3 distils to few-step). Naive flow is the analyzed
-   negative; DPM-Solver++ the safety net; C3 the novelty.
+`metrics.py` is written and §7 is populated. LPIPS-vs-teacher was **deliberately
+retired** (confounded); CLIP-sim is saturated and footnoted — neither is an open item.
+
+1. **Normalized-PoseDist recompute** — code is in `metrics.py` (Task 5); re-run
+   metrics on the box to fill the coarse pose-normalized column.
+2. **Conditioning follow-ups** — settle the naive-flow rows' conditioning source
+   (Task-2 note); optionally re-run DPM/C3 on `mp_target` to make a genuinely
+   MediaPipe-conditioned sampler table (current one is uniformly OpenPose).
+3. **Goal-1 target caveat** — confirm the target-side MediaPipe-vs-OpenPose
+   divergence (Task 3) before any target-equivalence claim; source equivalence holds.
+4. **Optional** — logit-normal t-sampling ablation for the naive-flow chapter;
+   more evaluation cases (case-2+); wall-clock column (NFE is the speed axis meanwhile).
+5. **Write-up** — MediaPipe (Goal 1, *separate* axis) + the flow-quality arc (naive
+   soft → diagnose → PF-ODE retains prior → C3 distils to few-step), sampler table
+   uniformly OpenPose. Naive flow = analyzed negative; DPM-Solver++ = safety net;
+   C3 = novelty.
 
 ---
 
