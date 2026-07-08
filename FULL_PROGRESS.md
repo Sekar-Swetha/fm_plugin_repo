@@ -49,6 +49,9 @@ rectified flow.
 ## 2. Contributions (final set)
 
 - **Goal 1 — MediaPipe pose.** Drop-in OpenPose-format skeletons from MediaPipe.
+  MediaPipe is a single `pip` dependency with no C++/Caffe/CUDA build and runs directly
+  in the `me310` environment — a practicality win over OpenPose's heavier build,
+  independent of accuracy.
 - **A — CFM-OT training loss.** Replace the DDPM epsilon loss with the CFM-OT
   velocity loss (`train_adaptor_fm.py`). Nothing else touched.
 - **B — Flow inversion + ODE sampling.** Replace DDIM inversion + null-text with
@@ -149,6 +152,11 @@ coherent edits; the gap is *sharpness*, not failure.
 > Goal-1 or Goal-2 claims.
 
 ### 5.3 Diagnosing the softness (levers ruled out)
+
+> Filename note: several gifs here are named `mediapipe_flow_*`, but this is a naming
+> artifact — like all flow-family runs they were conditioned on the **OpenPose**
+> pipeline (inferred, §7 †); the names do **not** imply MediaPipe conditioning.
+
 | Lever | Gif | Outcome |
 |---|---|---|
 | More training (1000 step) | `mediapipe_flow_1000step_case1.gif` | Worse (1-video overfit + LR-resume bug, since fixed). |
@@ -299,6 +307,17 @@ pose source in the DPM/C3 experiments.
 > MediaPipe-extracted target), not superior fidelity (see the PoseDist note).
 > **C3's distillation teacher is the OpenPose DPM-Solver++ trajectory**, not this row.
 
+> **Goal-1 target caveat.** MediaPipe ≈ OpenPose is verified on the source frames
+> (pixel-L1 ≈2/255; x-centroids 0.513 vs 0.509). Target-side equivalence is unverified:
+> the shipped OpenPose target skeleton and MediaPipe-on-`target_images` differ 0.16 in
+> x-centroid. The most likely explanation is a data-provenance difference — the
+> dataset's OpenPose target was probably rendered from different (or differently-framed)
+> inputs than `target_images` — with a genuine detector difference on this clip as the
+> alternative. Disambiguating would require running OpenPose on the identical
+> `target_images`, which we did not do; we claim source-frame equivalence only. This
+> concerns Goal 1 alone: all sampler-comparison rows share the same OpenPose target, so
+> the divergence does not affect the DPM/C3 results.
+
 **Headline finding — quality scales with NFE; pose fidelity is uniform across the OpenPose samplers:**
 - **Sharpness scales with steps** — full-frame 0.0007→0.0145 and subject-region
   0.006→0.123 over C3 1→6; C3-6 reaches the OpenPose DPM/baseline sharpness level
@@ -380,11 +399,14 @@ retired** (confounded); CLIP-sim is saturated and footnoted — neither is an op
 
 1. **Normalized-PoseDist recompute** — code is in `metrics.py` (Task 5); re-run
    metrics on the box to fill the coarse pose-normalized column.
-2. **Conditioning follow-ups** — settle the naive-flow rows' conditioning source
-   (Task-2 note); optionally re-run DPM/C3 on `mp_target` to make a genuinely
-   MediaPipe-conditioned sampler table (current one is uniformly OpenPose).
-3. **Goal-1 target caveat** — confirm the target-side MediaPipe-vs-OpenPose
-   divergence (Task 3) before any target-equivalence claim; source equivalence holds.
+2. **MediaPipe in the few-step setting (existence proof)** — could be shown via a
+   single qualitative **DPM-on-`mp_source`** run as an existence-proof figure; **not
+   required** for the quantitative claims, which stand on the OpenPose pipeline.
+   (Conditioning provenance is settled: sampler rows are OpenPose — hash-confirmed, or
+   inferred for the two naive-flow rows.)
+3. **Goal-1 target divergence** — target-side MediaPipe-vs-OpenPose equivalence is
+   unverified (§7 Goal-1 target caveat); source equivalence holds and the divergence
+   does not affect the DPM/C3 results.
 4. **Optional** — logit-normal t-sampling ablation for the naive-flow chapter;
    more evaluation cases (case-2+); wall-clock column (NFE is the speed axis meanwhile).
 5. **Write-up** — MediaPipe (Goal 1, *separate* axis) + the flow-quality arc (naive
