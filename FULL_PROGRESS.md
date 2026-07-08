@@ -21,6 +21,13 @@ sample the frozen sharp epsilon editor with a **probability-flow ODE solver
 null-text baseline. Naive flow becomes the analyzed negative that motivates the
 contribution.
 
+**Two contributions, evaluated independently:** MediaPipe pose extraction (Goal 1),
+and flow-family few-step sampling on the standard OpenPose pipeline (Goal 2). The
+sampler experiments (naive flow, DPM-Solver++, C3) were run with **OpenPose**
+conditioning (hash-confirmed, §7); MediaPipe is validated **separately** — at the
+source-pose level and end-to-end under epsilon/DDIM — and was **not** combined with
+the flow samplers.
+
 ---
 
 ## 1. Project goal
@@ -52,6 +59,11 @@ rectified flow.
   high-order deterministic PF-ODE solver. No retraining. **Sharp at ~15 NFE.**
 - **C3 — Consistency distillation (novel headline).** Distil the DPM-Solver++
   teacher into a **1–4 step** editor. **Sharp at 2–4 NFE.**
+
+**Evaluated independently:** Goal 1 (MediaPipe) is a pose-extraction swap validated on
+its own (source-pose + epsilon/DDIM). A/B, DPM-Solver++ and C3 (the flow-family /
+Goal-2 work) were all run on the **standard OpenPose pipeline** (§7 hash provenance) —
+MediaPipe was **not** the pose source in those sampler experiments.
 
 ---
 
@@ -120,12 +132,21 @@ All gifs in `fm_outputs/`. Case-1 = "a girl dancing on a beach", 8 frames.
 | Run | Gif | Result |
 |---|---|---|
 | CFM-OT sampled through DDIM (wrong) | `baseline_case1.gif` | Rainbow **noise** — velocity ≠ epsilon; a flow-ODE sampler is mandatory. |
-| OpenPose + flow (ODE, 50 step) | `flow_ode_fm_50step_case1.gif` | Coherent edit, **soft**. |
-| MediaPipe + flow (ODE) | `mediapipe_flow_case1.gif` | Coherent edit, **soft**. |
+| flow (ODE, 50 step) | `flow_ode_fm_50step_case1.gif` | Coherent edit, **soft**. |
+| flow (ODE), naive-flow gif | `mediapipe_flow_case1.gif` | Coherent edit, **soft**. (conditioning OpenPose by inference, not hash-confirmed — see §7 †) |
 
-**Conclusion:** MediaPipe ≈ OpenPose across both samplers (Goal 1). Flow inversion
-+ ODE replaces DDIM + null-text end-to-end and produces coherent edits; the gap is
-*sharpness*, not failure.
+**Conclusion:** Flow inversion + ODE replaces DDIM + null-text end-to-end and produces
+coherent edits; the gap is *sharpness*, not failure.
+
+> **Goal-1 scope (downgraded, honest):** MediaPipe ≈ OpenPose is verified **at the
+> source-pose level** (`verify.py`, pixel-L1 ≈2/255) and **end-to-end under
+> epsilon/DDIM** (`mediapipe_epsilon_case1.gif`). It is **NOT** tested under the flow
+> samplers — the flow-family work (naive flow, DPM-Solver++, C3) used the **standard
+> OpenPose pipeline** (§7 hash provenance). The `mediapipe_flow` gif's name once
+> suggested a MediaPipe flow run, but its conditioning is not hash-recoverable and its
+> PoseDist places it with OpenPose. Filling the missing "MediaPipe × flow-sampler" cell
+> would need one qualitative **DPM-on-`mp_source`** run — optional, not required for the
+> Goal-1 or Goal-2 claims.
 
 ### 5.3 Diagnosing the softness (levers ruled out)
 | Lever | Gif | Outcome |
@@ -241,21 +262,31 @@ value is unchanged.**
 `target_condition/openposefull`, the skeleton every eval config reads, is
 **8/8 byte-identical to the original OpenPose backup** and **0/8 to the MediaPipe
 render** (`mp_target`). So the **sampler comparison below is uniformly OpenPose-
-conditioned.** MediaPipe (Goal 1) is a *separate* axis — validated on source frames
-(§5.1, `verify.py`) — and was **not** the pose source in the DPM/C3 experiments.
+conditioned.** Baseline, DPM-Solver++ and C3 are **hash-confirmed** OpenPose; the two
+naive-flow rows are **OpenPose by inference** (they predate the hashed state, so their
+original conditioning is not hash-recoverable — see the †). MediaPipe (Goal 1) is a
+*separate* axis — validated on source frames (§5.1, `verify.py`) — and was **not** the
+pose source in the DPM/C3 experiments.
 
 ### Sampler comparison (uniformly OpenPose conditioning)
 | Method | Cond. | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-tgt ↓ | frames |
 |---|---|---|---|---|---|---|---|
 | **Baseline epsilon (DDIM-50 + null-text) — reference** | OpenPose | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 | gif |
-| A/B naive flow — *cond. unverified (Task-2 note)* | ? | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
-| A/B naive flow (50-step ODE) — *cond. unverified* | ? | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
+| A/B naive flow | OpenPose† | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
+| A/B naive flow (50-step ODE) | OpenPose† | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
 | DPM-Solver++ | OpenPose | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
 | **DPM-Solver++** | OpenPose | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 | gif |
 | C3 consistency | OpenPose | 1 | 0.0007 | 0.0057 | 0.902 | 0.176 | png |
 | C3 consistency | OpenPose | 2 | 0.0038 | 0.0331 | 0.889 | 0.173 | png |
 | C3 consistency | OpenPose | 4 | 0.0100 | 0.0859 | 0.852 | 0.171 | png |
 | **C3 consistency** | OpenPose | **6** | **0.0145** | 0.1228 | 0.817 | 0.173 | png |
+
+> † **OpenPose (inferred from PoseDist 0.177; original conditioning not
+> hash-recoverable).** The two naive-flow gifs predate the current file state, so a
+> byte-hash can't confirm what drove them; their PoseDist (0.177) matches the
+> OpenPose-driven cluster (~0.17), not the MediaPipe row (0.040), so they are treated
+> as OpenPose. Not presented as hash-confirmed. All other sampler rows are
+> hash-confirmed OpenPose.
 
 ### Goal-1 MediaPipe reference (NOT part of the sampler comparison)
 | Method | Cond. | NFE | Sharpness (full) ↑ | subj Sharpness ↑ | bg SSIM ↑ | PoseDist-tgt ↓ | frames |
@@ -283,9 +314,9 @@ conditioned.** MediaPipe (Goal 1) is a *separate* axis — validated on source f
 
 **Naive flow loses on quality:** softest subject (subj Sharpness 0.0088, below every
 other row) and softer full-frame than baseline (0.0122 < 0.0133); its 50-step ODE
-variant also has the highest PoseDist (0.196). The analyzed negative. **Its
-conditioning source is unverified (Task-2 note) — do not compare its PoseDist to the
-OpenPose rows until settled.**
+variant also has the highest PoseDist (0.196). The analyzed negative. Its
+conditioning is **OpenPose by inference** (†, not hash-confirmed) — its 0.177 PoseDist
+already sits in the OpenPose cluster, so the comparison is consistent.
 
 **DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at equal pose
 fidelity, **15 NFE vs 50** — both OpenPose-conditioned.
