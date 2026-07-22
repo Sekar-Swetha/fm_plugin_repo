@@ -1,0 +1,62 @@
+# EXP1 — conditioned-inversion round-trip diagnostic (source -> source).
+# Inverts the SOURCE latent with the SOURCE skeleton then forward-samples with the
+# SAME source conditioning and the SAME step count; reports subject-mask vs
+# background latent recovery error (per-frame RMS + aggregate). Diagnostic only —
+# writes a CSV + recon gif and runs no edit. Isolated from flow/DPM/C3 paths.
+#
+# CHECKPOINT: use the CFM-OT velocity (flow) checkpoint whose inversion §5.3 tested
+# (the A/B soft flow model). Default below is checkpoint-1500-fm; if the §5.3
+# conditioned-inversion runs used a different flow checkpoint, point these two lines
+# at it. Confirm on the box:  ls outputs/train-case-1-motion*/ | grep fm
+pretrained_model_path: checkpoints/stable-diffusion-v1-5
+output_dir: "outputs/eval-case-1-roundtrip"
+resume_from_checkpoint: "outputs/train-case-1-motion/checkpoint-1500-fm"
+adapter_weight_path: "outputs/train-case-1-motion/controlnet_adapter_checkpoint-1500-fm.pth"
+
+input_data:
+  video_dir: "data/case-1"
+  prompt: "a girl is dancing"
+  n_sample_frames: 8
+  width: 512
+  height: 512
+  sample_start_idx: 0
+  sample_frame_rate: 1
+  condition: [openposefull]
+  video_suffix: .png
+  condition_suffix: .png
+  noise_level: 10000
+  image_embed_drop: 0.1
+  source_mask_dir: man.mask        # subject mask for the region split
+
+validation_data:
+  prompts:
+    - "a girl is dancing"
+  video_length: 8
+  width: 512
+  height: 512
+  noise_level: 0
+  num_inference_steps: 50
+  num_inv_steps: 50
+  guidance_scale: 1.0
+  use_null_inv: False
+  controlnet_conditioning_scale: 1.0
+
+  # ---- EXP1 round-trip diagnostic ----
+  flow_roundtrip_check: True
+  loss_type: cfm_ot
+  flow_inv_steps: 50            # inversion AND forward both use this (held equal)
+  flow_inv_method: heun         # 2nd-order; matches the conditioned-inversion default
+
+  # flow / dpm / consistency paths OFF (the hook continues before them)
+  use_flow_inversion: False
+  use_dpm_solver: False
+  use_consistency: False
+
+input_batch_size: 1
+seed: 33
+mixed_precision: "no"
+gradient_checkpointing: True
+enable_xformers_memory_efficient_attention: True
+use_sc_attn: True
+use_st_attn: False
+st_attn_idx: 0

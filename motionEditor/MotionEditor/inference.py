@@ -371,6 +371,111 @@ def main(
         generator = torch.Generator(device="cuda")
         generator.manual_seed(seed)
 
+        # ====== EXP1: conditioned-inversion round-trip diagnostic (source -> source) ======
+        # Guarded by `flow_roundtrip_check`. Inverts the SOURCE latent with the SOURCE
+        # skeleton, then forward-samples with the SAME source conditioning and the SAME
+        # step count (flow_inv_steps), and reports latent-space recovery error split on
+        # the subject mask (man.mask) vs background — per-frame RMS + aggregate. Diagnostic
+        # only: writes a CSV + a recon gif, then `continue`s (runs no edit). Separates
+        # "inversion still leaves subject seed error" from "inversion fine -> subject
+        # ghost is 100% Cause-1 velocity". No training; mirrors the flow_cond_inversion
+        # velocity closure exactly.
+        if getattr(validation_data, "flow_roundtrip_check", False):
+            import os as _os
+            import torch.nn.functional as _Frt
+            _N = getattr(validation_data, "flow_inv_steps", 50)
+            _method = getattr(validation_data, "flow_inv_method", "heun")
+            _ntt = 1000
+            _eps = 1e-5
+            print(f"[rt] round-trip check: N={_N} (inversion == forward) method={_method}")
+            with torch.no_grad():
+                _ehs = text_encoder(input_dataset.prompt_ids.to(latents.device).unsqueeze(0))[0]
+                _imgs = validation_pipeline.prepare_image(
+                    image=source_skeleton, width=input_data.width, height=input_data.height,
+                    batch_size=1, num_images_per_prompt=1, device=latents.device,
+                    dtype=controlnet.dtype, do_classifier_free_guidance=False,
+                )
+                _imgs = rearrange(_imgs, "b f c h w -> (b f) c h w").to(
+                    device=controlnet.device, dtype=controlnet.dtype)
+
+                def _rt_velocity(x, t_idx_int):
+                    ts = torch.full((x.shape[0],), t_idx_int, device=x.device, dtype=torch.long)
+                    cn_in = rearrange(x, "b c f h w -> (b f) c h w").to(dtype=controlnet.dtype)
+                    d, m = controlnet(
+                        cn_in, ts,
+                        encoder_hidden_states=_ehs.repeat(video_length, 1, 1),
+                        controlnet_cond=_imgs, conditioning_scale=1.0, return_dict=False,
+                    )
+                    d = [rearrange(s, "(b f) c h w -> b c f h w", f=video_length) for s in d]
+                    m = rearrange(m, "(b f) c h w -> b c f h w", f=video_length)
+                    return unet(
+                        x, ts, encoder_hidden_states=_ehs,
+                        down_block_additional_residuals=d,
+                        mid_block_additional_residual=m,
+                    ).sample.to(x.dtype)
+
+                def _tidx(tc):
+                    return int(round(min(max(tc, _eps), 1 - _eps) * (_ntt - 1)))
+
+                dt = 1.0 / _N
+                # --- invert: t 1 -> 0 (same closure as flow_cond_inversion) ---
+                x = latents
+                for k in range(_N):
+                    v1 = _rt_velocity(x, _tidx(1.0 - k / _N))
+                    if _method == "heun" and k < _N - 1:
+                        v2 = _rt_velocity(x - dt * v1, _tidx(1.0 - (k + 1) / _N))
+                        x = x - dt * 0.5 * (v1 + v2)
+                    else:
+                        x = x - dt * v1
+                z0 = x
+                # --- forward: t 0 -> 1, SAME N, SAME source conditioning ---
+                x = z0
+                for k in range(_N):
+                    v1 = _rt_velocity(x, _tidx(k / _N))
+                    if _method == "heun" and k < _N - 1:
+                        v2 = _rt_velocity(x + dt * v1, _tidx((k + 1) / _N))
+                        x = x + dt * 0.5 * (v1 + v2)
+                    else:
+                        x = x + dt * v1
+                z_rt = x  # reconstructed source latent
+
+                # per-frame region error: RMS over subject-mask vs background pixels,
+                # in latent space (mask downsampled to latent res). RMS (per-pixel) so
+                # subject vs bg are comparable despite different pixel counts.
+                _err = (z_rt - latents).float()               # (1,4,F,h,w)
+                _, _C, _F, _h, _w = _err.shape
+                _m = source_masks.float()
+                while _m.dim() > 4:
+                    _m = _m[:, 0]
+                _m = _m.reshape(-1, 1, _m.shape[-2], _m.shape[-1])[:_F]
+                _m = _Frt.interpolate(_m, size=(_h, _w), mode="nearest")   # (F,1,h,w)
+                _subj = (_m[:, 0] > 0.5)                       # (F,h,w)
+                sq = (_err[0] ** 2).sum(0)                     # (F,h,w) sum over channels
+                lines = ["frame,subject_RMS,background_RMS,subject_px,background_px"]
+                for f in range(_F):
+                    sm = _subj[f]
+                    bm = ~sm
+                    s_rms = float(sq[f][sm].mean().sqrt().item()) if sm.any() else float("nan")
+                    b_rms = float(sq[f][bm].mean().sqrt().item()) if bm.any() else float("nan")
+                    lines.append(f"{f},{s_rms:.6f},{b_rms:.6f},{int(sm.sum())},{int(bm.sum())}")
+                    print(f"[rt] frame {f}: subj_RMS={s_rms:.6f}  bg_RMS={b_rms:.6f}")
+                allsub = torch.cat([sq[f][_subj[f]] for f in range(_F) if _subj[f].any()])
+                allbg = torch.cat([sq[f][~_subj[f]] for f in range(_F)])
+                agg_s = float(allsub.mean().sqrt().item())
+                agg_b = float(allbg.mean().sqrt().item())
+                lines.append(f"AGG,{agg_s:.6f},{agg_b:.6f},{int(allsub.numel())},{int(allbg.numel())}")
+                print(f"[rt] AGGREGATE subj_RMS={agg_s:.6f}  bg_RMS={agg_b:.6f}  "
+                      f"subj/bg ratio={agg_s / max(agg_b, 1e-9):.2f}")
+                _os.makedirs(output_dir, exist_ok=True)
+                with open(_os.path.join(output_dir, "roundtrip_region_error.csv"), "w") as _f:
+                    _f.write("\n".join(lines) + "\n")
+                print(f"[rt] wrote {output_dir}/roundtrip_region_error.csv")
+                _rtvid = torch.from_numpy(validation_pipeline.decode_latents(z_rt.to(weight_dtype)))
+                save_videos_grid(_rtvid, f"{output_dir}/roundtrip_source_recon.gif", fps=fps)
+                print(f"[rt] wrote {output_dir}/roundtrip_source_recon.gif")
+            continue
+        # ===============================================================================
+
         # perform inversion
         _t0 = time.perf_counter()          # total edit wall-clock (inversion + sampling + decode)
         ddim_inv_latent = None
