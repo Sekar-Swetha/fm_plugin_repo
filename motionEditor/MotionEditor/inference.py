@@ -447,8 +447,12 @@ def main(
                 _m = source_masks.float()
                 while _m.dim() > 4:
                     _m = _m[:, 0]
-                _m = _m.reshape(-1, 1, _m.shape[-2], _m.shape[-1])[:_F]
-                _m = _Frt.interpolate(_m, size=(_h, _w), mode="nearest")   # (F,1,h,w)
+                _m = _m.reshape(-1, 1, _m.shape[-2], _m.shape[-1])
+                _m = _Frt.interpolate(_m, size=(_h, _w), mode="nearest")   # (K,1,h,w)
+                if _m.shape[0] == 1:
+                    _m = _m.expand(_F, -1, -1, -1)             # single clip mask -> all frames
+                else:
+                    _m = _m[:_F]
                 _subj = (_m[:, 0] > 0.5)                       # (F,h,w)
                 sq = (_err[0] ** 2).sum(0)                     # (F,h,w) sum over channels
                 lines = ["frame,subject_RMS,background_RMS,subject_px,background_px"]
