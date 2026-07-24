@@ -644,7 +644,19 @@ def main(
             train_index = get_word_inds(text=prompts[0], word_place="girl", tokenizer=tokenizer)
             validate_index = get_word_inds(text=prompts[1], word_place="girl", tokenizer=tokenizer)
 
-            STEP = getattr(validation_data, "attn_inject_step", 4)
+            # STEP = the denoising step at which two-branch K/V injection starts.
+            # Hard default 4 was tuned for DDIM-50 (fires at 4/50 = 8% into denoising).
+            # Under a short schedule (e.g. DPM-15) a fixed 4 fires far too late
+            # (4/15 = 27%), so the source K/V (logo/denim) is copied after the target
+            # structure is set. `attn_inject_fraction` re-times it as a fraction of the
+            # actual step count; unset -> preserves the fixed attn_inject_step behaviour.
+            _inj_frac = getattr(validation_data, "attn_inject_fraction", None)
+            if _inj_frac is not None:
+                _nsteps = getattr(validation_data, "num_inference_steps", 50)
+                STEP = max(1, int(round(_inj_frac * _nsteps)))
+                print(f"[inject] attn_inject_fraction={_inj_frac} x {_nsteps} steps -> STEP={STEP}")
+            else:
+                STEP = getattr(validation_data, "attn_inject_step", 4)
             LAYPER = 10
             if getattr(validation_data, "flow_no_injection", False):
                 # DIAGNOSTIC: skip the two-branch / temporal attention injection.
