@@ -169,6 +169,19 @@ coherent edits; the gap is *sharpness*, not failure.
 **Diagnosis:** static scene renders sharp; the **moving subject ghosts** because
 the 1-video CFM-OT velocity field is imprecise on dynamic content. Matches §4.
 
+**Inversion lever closed — measured (EXP-1/2, `flow_roundtrip_check`, 2026-07-24).**
+A source→source round-trip of the conditioned inversion (invert the source latent
+with the SOURCE skeleton, forward-sample with the same conditioning and step count)
+reconstructs the subject **sharply**, with subject/background latent-recovery ratio
+**1.78×** at 50 steps. Sweeping inversion steps 50→100→200 collapses the absolute
+subject error **~8×** (subj_RMS 0.0026→0.0009→0.0003) with the ratio trending toward 1
+(1.78→1.65→1.57) — i.e. the residual is **inversion-integration error that vanishes
+with steps**, not a velocity wall; the inversion recovers the subject to negligible
+error given enough steps. Therefore the edited-subject ghost originates at the
+**target-pose forward pass** (Cause 1 — the single-video velocity field's imprecision
+on the pose change), **not** the inversion path. No inversion work can fix it; the
+lever is closed.
+
 ### 5.4 C2 — single-pair distillation (attempted, negative)
 Distil the sharp epsilon editor into a flow via one `(z_src, z_edit)` pair; start
 the ODE at the source latent, few steps.
@@ -282,12 +295,21 @@ pose source in the DPM/C3 experiments.
 | **Baseline epsilon (DDIM-50 + null-text) — reference** | OpenPose | 50 | 0.0133 | 0.0149 | 0.901 | 0.171 | gif |
 | A/B naive flow | OpenPose† | 50 | **0.0122** | **0.0088** | 0.877 | 0.177 | gif |
 | A/B naive flow (50-step ODE) | OpenPose† | 50 | 0.0122 | 0.0159 | 0.874 | **0.196** | gif |
-| DPM-Solver++ | OpenPose | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
-| **DPM-Solver++** | OpenPose | **15** | **0.0144** | 0.0169 | 0.852 | 0.173 | gif |
+| DPM-Solver++ (order-2) | OpenPose | 20 | 0.0142 | 0.0154 | 0.854 | 0.173 | gif |
+| DPM-Solver++ (order-2) | OpenPose | 15 | 0.0144 | 0.0169 | 0.852 | 0.173 | gif |
+| **DPM-Solver++ (order-3)** | OpenPose | **15** | **0.0148** | **0.0197** | – | 0.175 | gif |
 | C3 consistency | OpenPose | 1 | 0.0007 | 0.0057 | 0.902 | 0.176 | png |
 | C3 consistency | OpenPose | 2 | 0.0038 | 0.0331 | 0.889 | 0.173 | png |
 | C3 consistency | OpenPose | 4 | 0.0100 | 0.0859 | 0.852 | 0.171 | png |
-| **C3 consistency** | OpenPose | **6** | **0.0145** | 0.1228 | 0.817 | 0.173 | png |
+| C3 consistency | OpenPose | 6 | 0.0145 | 0.1228 | 0.817 | 0.173 | png |
+| **C3 consistency** | OpenPose | **8** | **0.0162** | **0.1280** | – | 0.172 | png |
+
+_EXP-3/4 additions (2026-07-24, measured via `score_gif.py`): **DPM-Solver++ order-3
+@ 15 NFE** lifts subject sharpness +17% (0.0169→0.0197) at no extra cost — adopted as
+the DPM default; NFE≥20 does not help (15 is the knee); Karras spacing gave no benefit
+and is broken on the pinned diffusers. **C3 @ 8 NFE** is the sharpest full-frame result
+(0.0162); subject sharpness saturates by 6–8 (+4% from 6→8). Injection re-indexing
+(EXP-5) did not improve logo/denim fidelity and was reverted._
 
 > † **OpenPose (inferred from PoseDist 0.177; original conditioning not
 > hash-recoverable).** The two naive-flow gifs predate the current file state, so a

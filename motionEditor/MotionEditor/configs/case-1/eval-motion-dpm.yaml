@@ -45,9 +45,9 @@ validation_data:
   # ---- DPM-Solver++ (PF-ODE) sampler ----
   use_dpm_solver: True
   dpm_algorithm_type: "dpmsolver++"
-  dpm_solver_order: 2
+  dpm_solver_order: 3           # EXP-3: order-3 @ 15 NFE = +17% subj-sharpness over order-2, free
   dpm_solver_type: "midpoint"
-  dpm_use_karras_sigmas: False  # 0.15.1 may not support; plugin ignores if absent
+  dpm_use_karras_sigmas: False  # EXP-3: no benefit + unsupported/broken on 0.15.1 — keep off
 
   # ---- flow paths OFF (do not touch the flow config) ----
   use_flow_inversion: False
