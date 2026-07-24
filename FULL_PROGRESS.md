@@ -1,6 +1,6 @@
 # MotionEditor × Flow Matching — Full Dissertation Progress
 
-_Last updated: 2026-07-08. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
+_Last updated: 2026-07-24. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
 _This is the authoritative, self-contained record: read only this file and you
 know the entire project — goal, theory, every experiment, why the flow baseline
 fails, the two fixes that work, the code, the results, and what's left._
@@ -20,6 +20,11 @@ sample the frozen sharp epsilon editor with a **probability-flow ODE solver
 **few-step consistency model (C3)** — sharp at **2–4 steps** vs the DDIM-50 +
 null-text baseline. Naive flow becomes the analyzed negative that motivates the
 contribution.
+
+**Headline.** Sharpness and edit fidelity decouple across NFE (PoseDist ~0.17 for
+every sampler). DPM-Solver++ order-3 at 15 NFE reaches 0.0197 subject sharpness —
+~12× fewer model calls than DDIM-50 + null-text. Consistency distillation (C3)
+reaches 0.128 subject sharpness at 6–8 NFE (saturating) at C3's few-step speed.
 
 **Two contributions, evaluated independently:** MediaPipe pose extraction (Goal 1),
 and flow-family few-step sampling on the standard OpenPose pipeline (Goal 2). The
@@ -170,17 +175,24 @@ coherent edits; the gap is *sharpness*, not failure.
 the 1-video CFM-OT velocity field is imprecise on dynamic content. Matches §4.
 
 **Inversion lever closed — measured (EXP-1/2, `flow_roundtrip_check`, 2026-07-24).**
-A source→source round-trip of the conditioned inversion (invert the source latent
-with the SOURCE skeleton, forward-sample with the same conditioning and step count)
-reconstructs the subject **sharply**, with subject/background latent-recovery ratio
-**1.78×** at 50 steps. Sweeping inversion steps 50→100→200 collapses the absolute
-subject error **~8×** (subj_RMS 0.0026→0.0009→0.0003) with the ratio trending toward 1
-(1.78→1.65→1.57) — i.e. the residual is **inversion-integration error that vanishes
-with steps**, not a velocity wall; the inversion recovers the subject to negligible
-error given enough steps. Therefore the edited-subject ghost originates at the
-**target-pose forward pass** (Cause 1 — the single-video velocity field's imprecision
-on the pose change), **not** the inversion path. No inversion work can fix it; the
-lever is closed.
+EXP-1: a source→source round-trip of the conditioned inversion (invert the source
+latent with the SOURCE skeleton, forward-sample with the same conditioning and step
+count) reconstructs the subject **sharply** (qualitative complement to the numbers
+below). EXP-2 sweeps the inversion step count and measures subject-mask vs background
+latent-recovery RMS:
+
+| flow_inv_steps | subj_RMS ↓ | bg_RMS ↓ | subj/bg ratio |
+|---|---|---|---|
+| 50 | 0.00262 | 0.00147 | 1.78 |
+| 100 | 0.00091 | 0.00055 | 1.65 |
+| 200 | 0.00032 | 0.00020 | 1.57 |
+
+The absolute subject error collapses **~8×** (0.0026 → 0.0003) monotonically with more
+inversion steps, and the ratio trends toward 1 (1.78 → 1.57). So the 1.78× elevation at
+50 steps is **inversion-integration error, not a velocity wall** — the inversion
+recovers the subject to negligible RMS given sufficient steps. The **inversion lever is
+definitively closed**: the subject ghost in naive-flow edits is **target-pose
+forward-pass velocity imprecision (Cause 1)**, not inversion seed error.
 
 ### 5.4 C2 — single-pair distillation (attempted, negative)
 Distil the sharp epsilon editor into a flow via one `(z_src, z_edit)` pair; start
@@ -237,6 +249,20 @@ DDIM-50 + null-text baseline (~12–25× fewer steps, no null-text optimisation)
   `unet.train()` so gradient checkpointing actually fires (else the naive
   `baddbmm` self-attention allocates ~8 GB/softmax and OOMs at 8 frames);
 - device/dtype alignment in `consistency_train_step` (x on GPU with eps).
+
+### 5.7 Injection re-indexing (tested hypothesis — rejected)
+Hypothesis: MotionEditor's two-branch K/V injection starts at a hard-coded step
+(`STEP=4`, tuned for DDIM-50 = 8% into denoising); under a short schedule (DPM-15)
+that fires at 27%, plausibly copying the source K/V (logo/denim) too late and hurting
+fidelity. Test (EXP-5, `attn_inject_fraction`): re-time `STEP` to a fraction of the
+actual NFE (0.08 → `STEP=1` at 15 steps) on the DPM-15 order-3 output.
+
+Result: metrics marginally positive (subject sharpness +0.8% → 0.0199, PoseDist −1%
+→ 0.173), but the **visual verdict was negative** — the re-indexed output over-copies
+source appearance (judged "weird", slightly worse than the default). **Reverted.**
+Injection timing is **not** the fidelity bottleneck. The guarded `attn_inject_fraction`
+flag remains in the code, off by default. Reported as a tested-and-rejected hypothesis,
+not a bug.
 
 ---
 
@@ -306,10 +332,12 @@ pose source in the DPM/C3 experiments.
 
 _EXP-3/4 additions (2026-07-24, measured via `score_gif.py`): **DPM-Solver++ order-3
 @ 15 NFE** lifts subject sharpness +17% (0.0169→0.0197) at no extra cost — adopted as
-the DPM default; NFE≥20 does not help (15 is the knee); Karras spacing gave no benefit
-and is broken on the pinned diffusers. **C3 @ 8 NFE** is the sharpest full-frame result
-(0.0162); subject sharpness saturates by 6–8 (+4% from 6→8). Injection re-indexing
-(EXP-5) did not improve logo/denim fidelity and was reverted._
+the DPM default; NFE 10 and 15 are near-identical and NFE≥20 gives no benefit (15 is the
+knee). **C3 @ 8 NFE** is the sharpest full-frame result (0.0162); subject sharpness
+saturates by 6–8 (+4% from 6→8) — the dial has a knee. Karras sigma spacing is
+unsupported on our pinned diffusers 0.15.1 (order-3+karras produced a broken output) —
+closed as **environmental, not methodological**. Injection re-indexing (EXP-5, §5.7)
+did not improve logo/denim fidelity and was reverted._
 
 > † **OpenPose (inferred from PoseDist 0.177; original conditioning not
 > hash-recoverable).** The two naive-flow gifs predate the current file state, so a
@@ -359,8 +387,9 @@ variant also has the highest PoseDist (0.196). The analyzed negative. Its
 conditioning is **OpenPose by inference** (†, not hash-confirmed) — its 0.177 PoseDist
 already sits in the OpenPose cluster, so the comparison is consistent.
 
-**DPM-Solver++:** sharper than the DDIM-50 baseline (0.0144 > 0.0133) at equal pose
-fidelity, **15 NFE vs 50** — both OpenPose-conditioned.
+**DPM-Solver++:** sharper than the DDIM-50 baseline at equal pose fidelity, **15 NFE
+vs 50** — both OpenPose-conditioned. Order-2 already beats baseline (0.0144 > 0.0133);
+**order-3 (the adopted default) reaches 0.0148 full / 0.0197 subject** at the same 15 NFE.
 
 **bg SSIM 0.82–0.90** everywhere confirms the **scene is structurally preserved**
 (the pipeline works); it dips slightly for the most-saturated rows (C3-6 = 0.816).
