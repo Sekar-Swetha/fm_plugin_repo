@@ -1,6 +1,6 @@
 # MotionEditor × Flow Matching — Full Dissertation Progress
 
-_Last updated: 2026-07-24. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
+_Last updated: 2026-07-27. TCD MSc dissertation, Swetha Sekar (sekars@tcd.ie)._
 _This is the authoritative, self-contained record: read only this file and you
 know the entire project — goal, theory, every experiment, why the flow baseline
 fails, the two fixes that work, the code, the results, and what's left._
@@ -129,6 +129,38 @@ PF-ODE with a deterministic solver:
 ## 5. Experiments & results (every run, with its gif)
 
 All gifs in `fm_outputs/`. Case-1 = "a girl dancing on a beach", 8 frames.
+
+### 5.0 Toy proofs (CPU, method correctness — no GPU, no MotionEditor)
+Each contribution's core maths is validated in isolation on toy 2-D data before any
+real run (`flow_matching_plugin/verify_*.py`; artefacts in `proofs/`; regenerated
+2026-07-27). These prove the *method* is correct independent of the pipeline.
+
+**A — CFM-OT loss** (`verify_loss.py`, two-moons, 3-layer MLP, 4000 Adam steps):
+- Loss 1.164 → 0.985 (first/last-200-step avg); 1-step Euler already ≈ data mean,
+  10-step Euler recovers data std (0.833 vs 0.888) → the field is learned + samplable.
+- Mean straight-line path deviation **0.192** (near-straight, as OT predicts).
+
+**B — Flow inversion** (`verify_inversion.py`, round-trip L2 vs steps):
+
+| N | Euler | Heun |
+|---|---|---|
+| 4 | 4.1e-01 | 1.7e-02 |
+| 8 | 2.1e-01 | 2.4e-03 |
+| 16 | 1.0e-01 | 3.0e-04 |
+| 32 | 5.2e-02 | 3.8e-05 |
+
+Euler ~O(1/N), **Heun ~O(1/N²)** — round-trip error is already tiny at N=4 Heun
+(1.7e-02) vs DDIM's 50 steps + null-text. (Real-clip LPIPS is the GPU pipeline; the
+EXP-2 round-trip in §5.3 is the real-model analogue.)
+
+**C — Reflow** (`verify_reflow.py`, toy 2-cluster transport):
+- Path length 3.526 → 3.384 after one reflow round (straight-line bound 3.436) —
+  trajectories straighten.
+- NFE-1 sample quality (mean dist to data) **2.469 → 0.227** after reflow (**−90.8%**).
+
+Artefacts: `proofs/loss_curve.png`, `samples_before_after.png`, `straight_paths.png`,
+`roundtrip_vs_steps.png`, `inversion_trace.png`, `path_straightness_reflow.png` +
+`report*.md`. Plus **44 CPU unit tests** pass (`pytest tests/`).
 
 ### 5.1 Baselines (pipeline works end-to-end)
 | Run | Gif | Result |
@@ -338,6 +370,15 @@ saturates by 6–8 (+4% from 6→8) — the dial has a knee. Karras sigma spacin
 unsupported on our pinned diffusers 0.15.1 (order-3+karras produced a broken output) —
 closed as **environmental, not methodological**. Injection re-indexing (EXP-5, §5.7)
 did not improve logo/denim fidelity and was reverted._
+
+**Result graphs** (`proofs/figures/`, generated 2026-07-27, CPU/matplotlib from the
+measured numbers above):
+- `sharpness_by_method.png` — subject Laplacian sharpness per method/NFE (bar; the
+  money plot: naive flow below baseline, DPM order-3 above, C3 climbing 1→8).
+- `c3_dial_metrics.png` — C3 subject sharpness vs NFE with PoseDist flat (twin-axis;
+  the "sharpness↔speed dial at fixed fidelity" visual).
+- `inversion_convergence.png` — EXP-2 round-trip RMS (subject vs bg) vs inversion
+  steps (log-log; the closed-lever diagnostic).
 
 > † **OpenPose (inferred from PoseDist 0.177; original conditioning not
 > hash-recoverable).** The two naive-flow gifs predate the current file state, so a
